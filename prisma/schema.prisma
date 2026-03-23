@@ -1,0 +1,352 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model actividades {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id          String?               @db.Uuid
+  tipo                String                @db.VarChar(20)
+  modalidad           String?               @default("individual") @db.VarChar(20)
+  hora_inicio         DateTime              @db.Timestamp(6)
+  hora_fin            DateTime?             @db.Timestamp(6)
+  distancia_km        Decimal?              @db.Decimal(8, 3)
+  duracion_segs       Int?
+  velocidad_promedio  Decimal?              @db.Decimal(6, 3)
+  velocidad_max       Decimal?              @db.Decimal(6, 3)
+  ritmo_promedio      Decimal?              @db.Decimal(6, 3)
+  calorias            Int?
+  ruta                String?
+  creado_en           DateTime?             @default(now()) @db.Timestamp(6)
+  usuarios            usuarios?             @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  disputas_territorio disputas_territorio[]
+}
+
+model disputas_territorio {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  territorio_id String?      @db.Uuid
+  retador_id    String?      @db.Uuid
+  actividad_id  String?      @db.Uuid
+  resultado     String       @db.VarChar(20)
+  disputado_en  DateTime?    @default(now()) @db.Timestamp(6)
+  actividades   actividades? @relation(fields: [actividad_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios      usuarios?    @relation(fields: [retador_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  territorios   territorios? @relation(fields: [territorio_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model eventos {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  titulo          String            @db.VarChar(150)
+  descripcion     String?
+  fecha           DateTime          @db.Date
+  hora            DateTime?         @db.Time(6)
+  lugar           String?           @db.VarChar(200)
+  distancia_km    Decimal?          @db.Decimal(8, 2)
+  foto_url        String?
+  ruta_sugerida   String?
+  creado_en       DateTime?         @default(now()) @db.Timestamp(6)
+  eventos_usuario eventos_usuario[]
+}
+
+model eventos_usuario {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  evento_id  String?   @db.Uuid
+  usuario_id String?   @db.Uuid
+  unido_en   DateTime? @default(now()) @db.Timestamp(6)
+  eventos    eventos?  @relation(fields: [evento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios   usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([evento_id, usuario_id])
+}
+
+model grupos {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre              String                @db.VarChar(100)
+  descripcion         String?
+  avatar_url          String?
+  foto_url            String?
+  modalidad           String?               @default("social") @db.VarChar(20)
+  es_privado          Boolean?              @default(false)
+  creado_por          String?               @db.Uuid
+  creado_por_nombre   String?               @db.VarChar(100)
+  creado_en           DateTime?             @default(now()) @db.Timestamp(6)
+  usuarios            usuarios?             @relation(fields: [creado_por], references: [id], onUpdate: NoAction)
+  miembros_grupo      miembros_grupo[]
+  publicaciones       publicaciones[]
+  territorios         territorios[]
+  grupo_multimedia    grupo_multimedia[]
+  grupo_retos         grupo_retos[]
+  grupo_actividades   grupo_actividades[]
+  grupo_invitaciones  grupo_invitaciones[]
+}
+
+model grupo_multimedia {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_id   String?   @db.Uuid
+  usuario_id String?   @db.Uuid
+  url        String
+  creado_en  DateTime? @default(now()) @db.Timestamp(6)
+  grupos     grupos?   @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios   usuarios? @relation(fields: [usuario_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+}
+
+model grupo_retos {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_id            String?               @db.Uuid
+  creado_por          String?               @db.Uuid
+  titulo              String                @db.VarChar(150)
+  descripcion         String?
+  distancia_km        Decimal?              @db.Decimal(8, 2)
+  fecha_inicio        DateTime?             @db.Date
+  fecha_fin           DateTime?             @db.Date
+  creado_en           DateTime?             @default(now()) @db.Timestamp(6)
+  grupos              grupos?               @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios            usuarios?             @relation(fields: [creado_por], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  grupo_retos_usuario grupo_retos_usuario[]
+}
+
+model grupo_retos_usuario {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_reto_id String?      @db.Uuid
+  usuario_id    String?      @db.Uuid
+  completado    Boolean?     @default(false)
+  completado_en DateTime?    @db.Timestamp(6)
+  creado_en     DateTime?    @default(now()) @db.Timestamp(6)
+  grupo_retos   grupo_retos? @relation(fields: [grupo_reto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios      usuarios?    @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([grupo_reto_id, usuario_id])
+}
+
+model grupo_actividades {
+  id                       String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_id                 String?                    @db.Uuid
+  creado_por               String?                    @db.Uuid
+  titulo                   String                     @db.VarChar(150)
+  descripcion              String?
+  tipo                     String?                    @default("senderismo") @db.VarChar(50)
+  lugar                    String?                    @db.VarChar(200)
+  fecha                    DateTime?                  @db.Date
+  hora                     DateTime?                  @db.Time(6)
+  creado_en                DateTime?                  @default(now()) @db.Timestamp(6)
+  grupos                   grupos?                    @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios                 usuarios?                  @relation(fields: [creado_por], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  grupo_actividades_usuario grupo_actividades_usuario[]
+}
+
+model grupo_actividades_usuario {
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_actividad_id  String?             @db.Uuid
+  usuario_id          String?             @db.Uuid
+  completado          Boolean?            @default(false)
+  completado_en       DateTime?           @db.Timestamp(6)
+  creado_en           DateTime?           @default(now()) @db.Timestamp(6)
+  grupo_actividades   grupo_actividades?  @relation(fields: [grupo_actividad_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios            usuarios?           @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([grupo_actividad_id, usuario_id])
+}
+
+model grupo_invitaciones {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_id     String?   @db.Uuid
+  invitado_por String?   @db.Uuid
+  usuario_id   String?   @db.Uuid
+  estado       String?   @default("pendiente") @db.VarChar(20)
+  creado_en    DateTime? @default(now()) @db.Timestamp(6)
+  grupos       grupos?   @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios_invitado_por usuarios? @relation("invitaciones_invitado_por", fields: [invitado_por], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  usuarios_usuario      usuarios? @relation("invitaciones_usuario", fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([grupo_id, usuario_id])
+}
+
+model insignias {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre            String              @db.VarChar(100)
+  descripcion       String?
+  icono_url         String?
+  condicion         String?
+  creado_en         DateTime?           @default(now()) @db.Timestamp(6)
+  insignias_usuario insignias_usuario[]
+}
+
+model insignias_usuario {
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id  String?    @db.Uuid
+  insignia_id String?    @db.Uuid
+  ganado_en   DateTime?  @default(now()) @db.Timestamp(6)
+  insignias   insignias? @relation(fields: [insignia_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios    usuarios?  @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([usuario_id, insignia_id])
+}
+
+model miembros_grupo {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grupo_id   String?   @db.Uuid
+  usuario_id String?   @db.Uuid
+  rol        String?   @default("miembro") @db.VarChar(20)
+  unido_en   DateTime? @default(now()) @db.Timestamp(6)
+  grupos     grupos?   @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios   usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([grupo_id, usuario_id])
+}
+
+model notificaciones {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id String?   @db.Uuid
+  tipo       String    @db.VarChar(50)
+  mensaje    String
+  leida      Boolean?  @default(false)
+  creado_en  DateTime? @default(now()) @db.Timestamp(6)
+  usuarios   usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model publicaciones {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  autor_id   String?   @db.Uuid
+  grupo_id   String?   @db.Uuid
+  contenido  String
+  urls_media String[]
+  creado_en  DateTime? @default(now()) @db.Timestamp(6)
+  usuarios   usuarios? @relation(fields: [autor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  grupos     grupos?   @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model retos {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  titulo            String          @db.VarChar(150)
+  descripcion       String?
+  tipo              String          @db.VarChar(20)
+  frecuencia        String          @db.VarChar(20)
+  valor_objetivo    Decimal         @db.Decimal(10, 2)
+  unidad_objetivo   String          @db.VarChar(20)
+  puntos_recompensa Int?            @default(0)
+  fecha_inicio      DateTime?       @db.Date
+  fecha_fin         DateTime?       @db.Date
+  creado_en         DateTime?       @default(now()) @db.Timestamp(6)
+  retos_usuario     retos_usuario[]
+}
+
+model retos_usuario {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id      String?   @db.Uuid
+  reto_id         String?   @db.Uuid
+  progreso_actual Decimal?  @default(0) @db.Decimal(10, 2)
+  estado          String?   @default("pendiente") @db.VarChar(20)
+  completado_en   DateTime? @db.Timestamp(6)
+  retos           retos?    @relation(fields: [reto_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios        usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([usuario_id, reto_id])
+}
+
+model seguimientos {
+  id                                          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  seguidor_id                                 String?   @db.Uuid
+  seguido_id                                  String?   @db.Uuid
+  creado_en                                   DateTime? @default(now()) @db.Timestamp(6)
+  usuarios_seguimientos_seguido_idTousuarios  usuarios? @relation("seguimientos_seguido_idTousuarios", fields: [seguido_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios_seguimientos_seguidor_idTousuarios usuarios? @relation("seguimientos_seguidor_idTousuarios", fields: [seguidor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([seguidor_id, seguido_id])
+}
+
+model territorios {
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre               String                @db.VarChar(100)
+  poligono             String
+  propietario_id       String?               @db.Uuid
+  grupo_propietario_id String?               @db.Uuid
+  conquistado_en       DateTime?             @db.Timestamp(6)
+  ultima_disputa_en    DateTime?             @db.Timestamp(6)
+  veces_disputado      Int?                  @default(0)
+  creado_en            DateTime?             @default(now()) @db.Timestamp(6)
+  disputas_territorio  disputas_territorio[]
+  grupos               grupos?               @relation(fields: [grupo_propietario_id], references: [id], onUpdate: NoAction, map: "fk_grupo_propietario")
+  usuarios             usuarios?             @relation(fields: [propietario_id], references: [id], onUpdate: NoAction)
+}
+
+model usuarios {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre           String    @db.VarChar(100)
+  correo           String    @unique @db.VarChar(150)
+  contrasena_hash  String
+  avatar_url       String?
+  biografia        String?
+  peso_kg          Decimal?  @db.Decimal(5, 2)
+  altura_cm        Decimal?  @db.Decimal(5, 2)
+  fecha_nacimiento DateTime? @db.Date
+  objetivo         String?   @db.VarChar(50)
+  puntos           Int?      @default(0)
+  creado_en        DateTime? @default(now()) @db.Timestamp(6)
+  
+  // Campos nuevos
+  genero           String?   @db.VarChar(20)
+  pais             String?   @db.VarChar(100)
+  ciudad           String?   @db.VarChar(100)
+  nivel            String?   @db.VarChar(20)
+
+  // Relaciones (déjalas igual que están)
+  actividades                                     actividades[]
+  disputas_territorio                             disputas_territorio[]
+  eventos_usuario                                 eventos_usuario[]
+  grupos                                          grupos[]
+  insignias_usuario                               insignias_usuario[]
+  miembros_grupo                                  miembros_grupo[]
+  notificaciones                                  notificaciones[]
+  publicaciones                                   publicaciones[]
+  retos_usuario                                   retos_usuario[]
+  seguimientos_seguimientos_seguido_idTousuarios  seguimientos[] @relation("seguimientos_seguido_idTousuarios")
+  seguimientos_seguimientos_seguidor_idTousuarios seguimientos[] @relation("seguimientos_seguidor_idTousuarios")
+  territorios                                     territorios[]
+  wearables                                       wearables[]
+  multimedia                                      multimedia[]
+  grupo_multimedia                                grupo_multimedia[]
+  grupo_retos                                     grupo_retos[]
+  grupo_retos_usuario                             grupo_retos_usuario[]
+  grupo_actividades                               grupo_actividades[]
+  grupo_actividades_usuario                       grupo_actividades_usuario[]
+  grupo_invitaciones_invitado                     grupo_invitaciones[] @relation("invitaciones_invitado_por")
+  grupo_invitaciones_usuario                      grupo_invitaciones[] @relation("invitaciones_usuario")
+
+  // ROLES
+  rol              String?   @default("usuario") @db.VarChar(20)
+}
+
+model wearables {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id    String?   @db.Uuid
+  marca         String?   @db.VarChar(50)
+  modelo        String?   @db.VarChar(50)
+  tipo_conexion String?   @db.VarChar(30)
+  vinculado_en  DateTime? @default(now()) @db.Timestamp(6)
+  usuarios      usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model multimedia {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id String?   @db.Uuid
+  url        String
+  creado_en  DateTime? @default(now()) @db.Timestamp(6)
+  usuarios   usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model novedades {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  titulo       String    @db.VarChar(150)
+  descripcion  String?
+  foto_url     String?
+  tipo         String?   @default("noticia") @db.VarChar(50)
+  url_externa  String?
+  activa       Boolean?  @default(true)
+  destacada    Boolean?  @default(false)
+  publicado_en DateTime? @db.Date
+  creado_en    DateTime? @default(now()) @db.Timestamp(6)
+}
