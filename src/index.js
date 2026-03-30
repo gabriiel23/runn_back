@@ -9,6 +9,8 @@ const adminRoutes = require('./routes/admin.routes')
 const eventosRoutes = require('./routes/eventos.routes')
 const gruposRoutes = require('./routes/grupos.routes')
 const novedadesRoutes = require('./routes/novedades.routes')
+const notificacionesRoutes = require('./routes/notificaciones.routes')
+const actividadesRoutes = require('./routes/actividades.routes')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -22,6 +24,8 @@ app.use('/admin', adminRoutes)
 app.use('/eventos', eventosRoutes)
 app.use('/grupos', gruposRoutes)
 app.use('/novedades', novedadesRoutes)
+app.use('/notificaciones', notificacionesRoutes)
+app.use('/actividades', actividadesRoutes)
 
 app.get('/', (req, res) => {
     res.json({ mensaje: 'RUNN API funcionando ✅' })

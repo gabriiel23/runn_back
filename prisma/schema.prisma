@@ -8,22 +8,28 @@ datasource db {
 }
 
 model actividades {
-  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  usuario_id          String?               @db.Uuid
-  tipo                String                @db.VarChar(20)
-  modalidad           String?               @default("individual") @db.VarChar(20)
-  hora_inicio         DateTime              @db.Timestamp(6)
-  hora_fin            DateTime?             @db.Timestamp(6)
-  distancia_km        Decimal?              @db.Decimal(8, 3)
-  duracion_segs       Int?
-  velocidad_promedio  Decimal?              @db.Decimal(6, 3)
-  velocidad_max       Decimal?              @db.Decimal(6, 3)
-  ritmo_promedio      Decimal?              @db.Decimal(6, 3)
-  calorias            Int?
-  ruta                String?
-  creado_en           DateTime?             @default(now()) @db.Timestamp(6)
-  usuarios            usuarios?             @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  disputas_territorio disputas_territorio[]
+  id                          String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id                  String?               @db.Uuid
+  tipo                        String                @db.VarChar(20)
+  modalidad                   String?               @default("individual") @db.VarChar(20)
+  hora_inicio                 DateTime              @db.Timestamp(6)
+  hora_fin                    DateTime?             @db.Timestamp(6)
+  distancia_km                Decimal?              @db.Decimal(8, 3)
+  duracion_segs               Int?
+  velocidad_promedio          Decimal?              @db.Decimal(6, 3)
+  velocidad_max               Decimal?              @db.Decimal(6, 3)
+  ritmo_promedio              Decimal?              @db.Decimal(6, 3)
+  calorias                    Int?
+  ruta                        String?
+  puntos_ganados              Int?                  @default(0)
+  elevacion_ganada_m          Decimal?              @db.Decimal(8, 2)
+  pasos                       Int?
+  frecuencia_cardiaca_promedio Int?
+  compartida                  Boolean?              @default(false)
+  creado_en                   DateTime?             @default(now()) @db.Timestamp(6)
+  usuarios                    usuarios?             @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  disputas_territorio         disputas_territorio[]
+  foto_url                    String?
 }
 
 model disputas_territorio {

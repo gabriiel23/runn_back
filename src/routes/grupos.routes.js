@@ -174,6 +174,48 @@ router.get('/mis-grupos', verificarToken, async (req, res) => {
     }
 })
 
+// ─── MIS INVITACIONES PENDIENTES ──────────────────────────
+router.get('/mis-invitaciones', verificarToken, async (req, res) => {
+    try {
+        const invitaciones = await prisma.grupo_invitaciones.findMany({
+            where: {
+                usuario_id: req.usuario.id,
+                estado: 'pendiente'
+            },
+            include: {
+                grupos: {
+                    select: {
+                        id: true,
+                        nombre: true,
+                        foto_url: true,
+                        descripcion: true,
+                        modalidad: true,
+                        _count: {
+                            select: { miembros_grupo: true }
+                        }
+                    }
+                },
+                usuarios_invitado_por: {
+                    select: {
+                        id: true,
+                        nombre: true,
+                        avatar_url: true
+                    }
+                }
+            },
+            orderBy: { creado_en: 'desc' }
+        })
+
+        res.json({
+            total: invitaciones.length,
+            invitaciones
+        })
+
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener invitaciones', error: error.message })
+    }
+})
+
 // ─── VER DETALLE DE GRUPO ─────────────────────────────────
 router.get('/:id', verificarToken, async (req, res) => {
     try {
@@ -218,6 +260,20 @@ router.get('/:id', verificarToken, async (req, res) => {
         // Verificar si el usuario logueado es miembro
         const miMembresía = grupo.miembros_grupo.find(m => m.usuario_id === req.usuario.id)
 
+        // Verificar si tiene solicitud pendiente
+        let solicitudPendiente = false
+        if (!miMembresía) {
+            const solicitud = await prisma.grupo_invitaciones.findFirst({
+                where: {
+                    grupo_id: req.params.id,
+                    usuario_id: req.usuario.id,
+                    invitado_por: null,
+                    estado: 'pendiente'
+                }
+            })
+            solicitudPendiente = !!solicitud
+        }
+
         const miembros = grupo.miembros_grupo.map(m => ({
             ...m.usuarios,
             rol: m.rol,
@@ -238,6 +294,7 @@ router.get('/:id', verificarToken, async (req, res) => {
             miembros,
             total_miembros: miembros.length,
             soy_miembro: !!miMembresía,
+            solicitud_pendiente: solicitudPendiente,
             mi_rol: miMembresía?.rol || null,
             retos: grupo.grupo_retos,
             actividades: grupo.grupo_actividades,
@@ -337,18 +394,59 @@ router.delete('/:id', verificarToken, async (req, res) => {
             })
         }
 
-        await prisma.grupos.delete({
-            where: { id: req.params.id }
-        })
+        // Eliminar en orden para evitar errores de cascade
+        await prisma.$transaction([
+            // Eliminar multimedia del grupo
+            prisma.grupo_multimedia.deleteMany({
+                where: { grupo_id: req.params.id }
+            }),
+            // Eliminar participantes de retos
+            prisma.grupo_retos_usuario.deleteMany({
+                where: {
+                    grupo_retos: { grupo_id: req.params.id }
+                }
+            }),
+            // Eliminar retos del grupo
+            prisma.grupo_retos.deleteMany({
+                where: { grupo_id: req.params.id }
+            }),
+            // Eliminar participantes de actividades
+            prisma.grupo_actividades_usuario.deleteMany({
+                where: {
+                    grupo_actividades: { grupo_id: req.params.id }
+                }
+            }),
+            // Eliminar actividades del grupo
+            prisma.grupo_actividades.deleteMany({
+                where: { grupo_id: req.params.id }
+            }),
+            // Eliminar invitaciones del grupo
+            prisma.grupo_invitaciones.deleteMany({
+                where: { grupo_id: req.params.id }
+            }),
+            // Eliminar miembros del grupo
+            prisma.miembros_grupo.deleteMany({
+                where: { grupo_id: req.params.id }
+            }),
+            // Eliminar publicaciones del grupo
+            prisma.publicaciones.deleteMany({
+                where: { grupo_id: req.params.id }
+            }),
+            // Finalmente eliminar el grupo
+            prisma.grupos.delete({
+                where: { id: req.params.id }
+            })
+        ])
 
         res.json({ mensaje: 'Grupo eliminado exitosamente ✅' })
 
     } catch (error) {
+        console.error('Error al eliminar grupo:', error)
         res.status(500).json({ mensaje: 'Error al eliminar grupo', error: error.message })
     }
 })
 
-// ─── UNIRSE AL GRUPO ──────────────────────────────────────
+// ─── SOLICITAR UNIÓN AL GRUPO ────────────────────────────
 router.post('/:id/unirse', verificarToken, async (req, res) => {
     try {
         const grupo = await prisma.grupos.findUnique({
@@ -360,26 +458,81 @@ router.post('/:id/unirse', verificarToken, async (req, res) => {
         }
 
         if (grupo.es_privado) {
-            return res.status(403).json({ 
-                mensaje: 'Este grupo es privado. Debes ser invitado para unirte.' 
+            return res.status(403).json({
+                mensaje: 'Este grupo es privado. Debes ser invitado para unirte.'
             })
         }
 
-        await prisma.miembros_grupo.create({
-            data: {
+        // Verificar si ya es miembro
+        const yaEsMiembro = await prisma.miembros_grupo.findUnique({
+            where: { grupo_id_usuario_id: { grupo_id: req.params.id, usuario_id: req.usuario.id } }
+        })
+        if (yaEsMiembro) {
+            return res.status(400).json({ mensaje: 'Ya eres miembro de este grupo' })
+        }
+
+        // Verificar si ya tiene solicitud pendiente
+        const solicitudExistente = await prisma.grupo_invitaciones.findFirst({
+            where: {
                 grupo_id: req.params.id,
                 usuario_id: req.usuario.id,
-                rol: 'miembro'
+                invitado_por: null,
+                estado: 'pendiente'
+            }
+        })
+        if (solicitudExistente) {
+            return res.status(400).json({ mensaje: 'Ya tienes una solicitud pendiente para este grupo' })
+        }
+
+        // Crear o actualizar la solicitud de unión (invitado_por = null indica que viene del usuario, no de un admin)
+        const invitacion = await prisma.grupo_invitaciones.upsert({
+            where: {
+                grupo_id_usuario_id: {
+                    grupo_id: req.params.id,
+                    usuario_id: req.usuario.id
+                }
+            },
+            update: {
+                estado: 'pendiente',
+                invitado_por: null
+            },
+            create: {
+                grupo_id: req.params.id,
+                usuario_id: req.usuario.id,
+                invitado_por: null,
+                estado: 'pendiente'
             }
         })
 
-        res.json({ mensaje: 'Te has unido al grupo exitosamente ✅' })
+        // Notificar a los admins/creadores del grupo
+        const solicitante = await prisma.usuarios.findUnique({
+            where: { id: req.usuario.id },
+            select: { nombre: true }
+        })
+
+        const nombreSolicitante = solicitante?.nombre || 'Un usuario'
+
+        const admins = await prisma.miembros_grupo.findMany({
+            where: { grupo_id: req.params.id, rol: { in: ['admin', 'creador'] } },
+            select: { usuario_id: true }
+        })
+
+        const notificacionesData = admins.map(a => ({
+            usuario_id: a.usuario_id,
+            tipo: 'solicitud_union',
+            mensaje: `${nombreSolicitante} quiere unirse al grupo "${grupo.nombre}". grupo_id:${req.params.id}`
+        }))
+
+        if (notificacionesData.length > 0) {
+            await prisma.notificaciones.createMany({
+                data: notificacionesData
+            })
+        }
+
+        res.json({ mensaje: 'Solicitud de unión enviada. El admin del grupo debe aceptarla ✅', solicitudEnviada: true })
 
     } catch (error) {
-        if (error.code === 'P2002') {
-            return res.status(400).json({ mensaje: 'Ya eres miembro de este grupo' })
-        }
-        res.status(500).json({ mensaje: 'Error al unirse al grupo', error: error.message })
+        res.status(500).json({ mensaje: 'Error al solicitar unión al grupo', error: error.message })
     }
 })
 
@@ -397,6 +550,174 @@ router.delete('/:id/unirse', verificarToken, async (req, res) => {
 
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al salirse del grupo', error: error.message })
+    }
+})
+
+// ─── OBTENER SOLICITUDES DE UNIÓN (admin del grupo) ──────
+router.get('/:id/solicitudes', verificarToken, async (req, res) => {
+    try {
+        const esAdmin = await esAdminDelGrupo(req.params.id, req.usuario.id)
+        if (!esAdmin) {
+            return res.status(403).json({ mensaje: 'No tienes permiso para ver las solicitudes' })
+        }
+
+        const solicitudes = await prisma.grupo_invitaciones.findMany({
+            where: {
+                grupo_id: req.params.id,
+                invitado_por: null,
+                estado: 'pendiente'
+            },
+            include: {
+                usuarios_usuario: {
+                    select: { id: true, nombre: true, avatar_url: true, ciudad: true, nivel: true }
+                }
+            },
+            orderBy: { creado_en: 'asc' }
+        })
+
+        res.json({
+            total: solicitudes.length,
+            solicitudes: solicitudes.map(s => ({
+                id: s.id,
+                estado: s.estado,
+                creado_en: s.creado_en,
+                usuario: s.usuarios_usuario
+            }))
+        })
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener solicitudes', error: error.message })
+    }
+})
+
+// ─── ACEPTAR/RECHAZAR SOLICITUD DE UNIÓN (admin del grupo)
+router.put('/:id/solicitudes/:solicitud_id', verificarToken, async (req, res) => {
+    const { accion } = req.body
+    if (!['aceptar', 'rechazar'].includes(accion)) {
+        return res.status(400).json({ mensaje: 'Acción inválida. Usa: aceptar o rechazar' })
+    }
+
+    try {
+        const esAdmin = await esAdminDelGrupo(req.params.id, req.usuario.id)
+        if (!esAdmin) {
+            return res.status(403).json({ mensaje: 'No tienes permiso para gestionar solicitudes' })
+        }
+
+        const solicitud = await prisma.grupo_invitaciones.findUnique({
+            where: { id: req.params.solicitud_id }
+        })
+
+        if (!solicitud || solicitud.grupo_id !== req.params.id || solicitud.invitado_por !== null) {
+            return res.status(404).json({ mensaje: 'Solicitud no encontrada' })
+        }
+
+        if (accion === 'aceptar') {
+            await prisma.miembros_grupo.create({
+                data: { grupo_id: req.params.id, usuario_id: solicitud.usuario_id, rol: 'miembro' }
+            })
+        }
+
+        await prisma.grupo_invitaciones.update({
+            where: { id: req.params.solicitud_id },
+            data: { estado: accion === 'aceptar' ? 'aceptada' : 'rechazada' }
+        })
+
+        // Notificar al solicitante
+        const grupoInfo = await prisma.grupos.findUnique({ where: { id: req.params.id }, select: { nombre: true } })
+        await prisma.notificaciones.create({
+            data: {
+                usuario_id: solicitud.usuario_id,
+                tipo: accion === 'aceptar' ? 'solicitud_aceptada' : 'solicitud_rechazada',
+                mensaje: accion === 'aceptar'
+                    ? `Tu solicitud para unirte al grupo "${grupoInfo.nombre}" fue aceptada. grupo_id:${req.params.id}`
+                    : `Tu solicitud para unirte al grupo "${grupoInfo.nombre}" fue rechazada.`
+            }
+        })
+
+        res.json({
+            mensaje: accion === 'aceptar'
+                ? 'Solicitud aceptada. El usuario en ahora miembro del grupo ✅'
+                : 'Solicitud rechazada ✅'
+        })
+    } catch (error) {
+        if (error.code === 'P2002') {
+            return res.status(400).json({ mensaje: 'El usuario ya es miembro del grupo' })
+        }
+        res.status(500).json({ mensaje: 'Error al procesar solicitud', error: error.message })
+    }
+})
+
+// ─── PANEL DE INVITACIONES ENVIADAS (admin del grupo) ─────
+router.get('/:id/invitaciones-panel', verificarToken, async (req, res) => {
+    try {
+        const esAdmin = await esAdminDelGrupo(req.params.id, req.usuario.id)
+        if (!esAdmin) {
+            return res.status(403).json({ mensaje: 'No tienes permiso para ver las invitaciones' })
+        }
+
+        const invitaciones = await prisma.grupo_invitaciones.findMany({
+            where: {
+                grupo_id: req.params.id,
+                invitado_por: { not: null }
+            },
+            include: {
+                usuarios_usuario: {
+                    select: { id: true, nombre: true, avatar_url: true }
+                },
+                usuarios_invitado_por: {
+                    select: { id: true, nombre: true }
+                }
+            },
+            orderBy: { creado_en: 'desc' }
+        })
+
+        res.json({
+            total: invitaciones.length,
+            invitaciones: invitaciones.map(inv => ({
+                id: inv.id,
+                estado: inv.estado,
+                creado_en: inv.creado_en,
+                usuario: inv.usuarios_usuario,
+                invitado_por: inv.usuarios_invitado_por
+            }))
+        })
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener panel de invitaciones', error: error.message })
+    }
+})
+
+// ─── BUSCAR USUARIOS PARA INVITAR (admin del grupo) ───────
+router.get('/:id/buscar-usuarios', verificarToken, async (req, res) => {
+    const { q } = req.query
+    try {
+        const esAdmin = await esAdminDelGrupo(req.params.id, req.usuario.id)
+        if (!esAdmin) {
+            return res.status(403).json({ mensaje: 'No tienes permiso para buscar usuarios' })
+        }
+
+        // Obtener IDs de miembros actuales del grupo
+        const miembrosActuales = await prisma.miembros_grupo.findMany({
+            where: { grupo_id: req.params.id },
+            select: { usuario_id: true }
+        })
+        const idsExcluidos = miembrosActuales.map(m => m.usuario_id)
+
+        const usuarios = await prisma.usuarios.findMany({
+            where: {
+                id: { notIn: idsExcluidos.length ? idsExcluidos : ['__none__'] },
+                ...(q && q.length >= 2 && {
+                    OR: [
+                        { nombre: { contains: q, mode: 'insensitive' } },
+                        { correo: { contains: q, mode: 'insensitive' } }
+                    ]
+                })
+            },
+            select: { id: true, nombre: true, correo: true, avatar_url: true, ciudad: true, nivel: true },
+            take: 20
+        })
+
+        res.json({ usuarios })
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al buscar usuarios', error: error.message })
     }
 })
 
@@ -456,6 +777,19 @@ router.delete('/:id/miembros/:usuario_id', verificarToken, async (req, res) => {
             }
         })
 
+        // Notificar al miembro eliminado
+        const grupoInfo = await prisma.grupos.findUnique({
+            where: { id: req.params.id },
+            select: { nombre: true }
+        })
+        await prisma.notificaciones.create({
+            data: {
+                usuario_id: req.params.usuario_id,
+                tipo: 'eliminado_grupo',
+                mensaje: `Has sido eliminado del grupo "${grupoInfo.nombre}"`
+            }
+        })
+
         res.json({ mensaje: 'Miembro eliminado del grupo exitosamente ✅' })
 
     } catch (error) {
@@ -492,6 +826,21 @@ router.put('/:id/miembros/:usuario_id/rol', verificarToken, async (req, res) => 
             data: { rol }
         })
 
+        // Notificar al miembro si pasa a ser admin
+        if (rol === 'admin') {
+            const grupoInfo = await prisma.grupos.findUnique({
+                where: { id: req.params.id },
+                select: { nombre: true }
+            })
+            await prisma.notificaciones.create({
+                data: {
+                    usuario_id: req.params.usuario_id,
+                    tipo: 'nuevo_admin',
+                    mensaje: `¡Ahora eres administrador del grupo "${grupoInfo.nombre}"! Tienes nuevas responsabilidades. grupo_id:${req.params.id}`
+                }
+            })
+        }
+
         res.json({ mensaje: `Rol actualizado a "${rol}" exitosamente ✅` })
 
     } catch (error) {
@@ -527,11 +876,22 @@ router.post('/:id/invitar', verificarToken, async (req, res) => {
             select: { nombre: true }
         })
 
-        await prisma.grupo_invitaciones.create({
-            data: {
+        const invitacion = await prisma.grupo_invitaciones.upsert({
+            where: {
+                grupo_id_usuario_id: {
+                    grupo_id: req.params.id,
+                    usuario_id
+                }
+            },
+            update: {
+                estado: 'pendiente',
+                invitado_por: req.usuario.id
+            },
+            create: {
                 grupo_id: req.params.id,
                 invitado_por: req.usuario.id,
-                usuario_id
+                usuario_id,
+                estado: 'pendiente'
             }
         })
 
@@ -540,41 +900,33 @@ router.post('/:id/invitar', verificarToken, async (req, res) => {
             data: {
                 usuario_id,
                 tipo: 'invitacion_grupo',
-                mensaje: `Te han invitado a unirte al grupo "${grupo.nombre}"`
+                mensaje: `Te han invitado a unirte al grupo "${grupo.nombre}". grupo_id:${req.params.id} invitacion_id:${invitacion.id}`
             }
         })
 
         res.json({ mensaje: `Invitación enviada a ${usuario.nombre} ✅` })
 
     } catch (error) {
-        if (error.code === 'P2002') {
-            return res.status(400).json({ mensaje: 'Ya existe una invitación pendiente para este usuario' })
-        }
         res.status(500).json({ mensaje: 'Error al invitar usuario', error: error.message })
     }
 })
 
 // ─── ACEPTAR/RECHAZAR INVITACIÓN ──────────────────────────
 router.put('/invitaciones/:invitacion_id', verificarToken, async (req, res) => {
-    const { accion } = req.body // 'aceptar' o 'rechazar'
-
+    const { accion } = req.body
     if (!['aceptar', 'rechazar'].includes(accion)) {
         return res.status(400).json({ mensaje: 'Acción inválida. Usa: aceptar o rechazar' })
     }
-
     try {
         const invitacion = await prisma.grupo_invitaciones.findUnique({
             where: { id: req.params.invitacion_id }
         })
-
         if (!invitacion) {
             return res.status(404).json({ mensaje: 'Invitación no encontrada' })
         }
-
         if (invitacion.usuario_id !== req.usuario.id) {
             return res.status(403).json({ mensaje: 'Esta invitación no es para ti' })
         }
-
         if (accion === 'aceptar') {
             await prisma.miembros_grupo.create({
                 data: {
@@ -583,19 +935,35 @@ router.put('/invitaciones/:invitacion_id', verificarToken, async (req, res) => {
                     rol: 'miembro'
                 }
             })
+            // Notificar a quien invitó
+            if (invitacion.invitado_por) {
+                const grupoInfo = await prisma.grupos.findUnique({
+                    where: { id: invitacion.grupo_id },
+                    select: { nombre: true }
+                })
+                const usuarioQueAcepto = await prisma.usuarios.findUnique({
+                    where: { id: req.usuario.id },
+                    select: { nombre: true }
+                })
+                await prisma.notificaciones.create({
+                    data: {
+                        usuario_id: invitacion.invitado_por,
+                        tipo: 'invitacion_aceptada',
+                        mensaje: `${usuarioQueAcepto.nombre} aceptó tu invitación al grupo "${grupoInfo.nombre}"`
+                    }
+                })
+            }
         }
-
         await prisma.grupo_invitaciones.update({
             where: { id: req.params.invitacion_id },
             data: { estado: accion === 'aceptar' ? 'aceptada' : 'rechazada' }
         })
-
+        // res.json siempre al final
         res.json({
             mensaje: accion === 'aceptar'
                 ? 'Te has unido al grupo exitosamente ✅'
                 : 'Invitación rechazada ✅'
         })
-
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al procesar invitación', error: error.message })
     }
@@ -628,6 +996,28 @@ router.post('/:id/retos', verificarToken, async (req, res) => {
         })
 
         res.status(201).json({ mensaje: 'Reto creado exitosamente ✅', reto })
+
+        // Notificar a todos los miembros del grupo (excepto al creador)
+        const miembrosParaNotificar = await prisma.miembros_grupo.findMany({
+            where: {
+                grupo_id: req.params.id,
+                usuario_id: { not: req.usuario.id }
+            },
+            select: { usuario_id: true }
+        })
+        const grupoInfo = await prisma.grupos.findUnique({
+            where: { id: req.params.id },
+            select: { nombre: true }
+        })
+        if (miembrosParaNotificar.length > 0) {
+            await prisma.notificaciones.createMany({
+                data: miembrosParaNotificar.map(m => ({
+                    usuario_id: m.usuario_id,
+                    tipo: 'nuevo_reto_grupo',
+                    mensaje: `🏁 Nuevo reto en "${grupoInfo.nombre}": "${titulo}". ¡Anímate a participar! grupo_id:${req.params.id} reto_id:${reto.id}`
+                }))
+            })
+        }
 
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al crear reto', error: error.message })
@@ -747,6 +1137,28 @@ router.post('/:id/actividades', verificarToken, async (req, res) => {
         })
 
         res.status(201).json({ mensaje: 'Actividad creada exitosamente ✅', actividad })
+
+        // Notificar a todos los miembros del grupo (excepto al creador)
+        const miembrosParaNotificar = await prisma.miembros_grupo.findMany({
+            where: {
+                grupo_id: req.params.id,
+                usuario_id: { not: req.usuario.id }
+            },
+            select: { usuario_id: true }
+        })
+        const grupoInfoAct = await prisma.grupos.findUnique({
+            where: { id: req.params.id },
+            select: { nombre: true }
+        })
+        if (miembrosParaNotificar.length > 0) {
+            await prisma.notificaciones.createMany({
+                data: miembrosParaNotificar.map(m => ({
+                    usuario_id: m.usuario_id,
+                    tipo: 'nueva_actividad_grupo',
+                    mensaje: `🏃 Nueva actividad en "${grupoInfoAct.nombre}": "${titulo}". ¡No te la pierdas! grupo_id:${req.params.id} actividad_id:${actividad.id}`
+                }))
+            })
+        }
 
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al crear actividad', error: error.message })
@@ -881,6 +1293,32 @@ router.post('/:id/multimedia', verificarToken, upload.single('foto'), async (req
                 url: data.publicUrl
             }
         })
+
+        // Notificar a todos los miembros del grupo (excepto quien subió la foto)
+        const miembrosParaNotificar = await prisma.miembros_grupo.findMany({
+            where: {
+                grupo_id: req.params.id,
+                usuario_id: { not: req.usuario.id }
+            },
+            select: { usuario_id: true }
+        })
+        const subioPor = await prisma.usuarios.findUnique({
+            where: { id: req.usuario.id },
+            select: { nombre: true }
+        })
+        const grupoInfoFoto = await prisma.grupos.findUnique({
+            where: { id: req.params.id },
+            select: { nombre: true }
+        })
+        if (miembrosParaNotificar.length > 0) {
+            await prisma.notificaciones.createMany({
+                data: miembrosParaNotificar.map(m => ({
+                    usuario_id: m.usuario_id,
+                    tipo: 'nueva_foto_grupo',
+                    mensaje: `🖼️ ${subioPor.nombre} añadió una foto a la galería de "${grupoInfoFoto.nombre}". ¡Échale un vistazo! grupo_id:${req.params.id}`
+                }))
+            })
+        }
 
         res.json({ mensaje: 'Foto subida exitosamente ✅', url: data.publicUrl })
 
