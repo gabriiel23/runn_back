@@ -1,5 +1,7 @@
 const express = require('express')
 const multer = require('multer')
+const QRCode = require('qrcode')
+const { nanoid } = require('nanoid')
 const prisma = require('../prisma')
 const supabase = require('../supabase')
 const verificarToken = require('../middlewares/auth.middleware')
@@ -12,9 +14,39 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 })
 
+// Helper para generar código alfanumérico único
+const generarCodigoUnico = async () => {
+  let codigo
+  let existe = true
+  while (existe) {
+    codigo = nanoid(8).toUpperCase()
+    const found = await prisma.eventos_codigos.findUnique({
+      where: { codigo_alfanumerico: codigo }
+    })
+    existe = !!found
+  }
+  return codigo
+}
+
+// Helper para generar QR como base64
+const generarQR = async (contenido) => {
+  return await QRCode.toDataURL(contenido, { width: 300, margin: 2 })
+}
+
+// Helper para notificar
+const notificar = async (usuarioId, tipo, mensaje) => {
+  await prisma.notificaciones.create({
+    data: { usuario_id: usuarioId, tipo, mensaje }
+  })
+}
+
 // ─── CREAR EVENTO (solo admin) ────────────────────────────
 router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (req, res) => {
-  const { titulo, descripcion, fecha, hora, lugar, distancia_km, ruta_sugerida } = req.body
+  const {
+    titulo, descripcion, fecha, hora, lugar, distancia_km,
+    es_pago, precio, limite_participantes, limite_lista_espera,
+    waypoints, punto_inicio, punto_fin
+  } = req.body
 
   if (!titulo || !fecha || !hora || !lugar) {
     return res.status(400).json({ mensaje: 'Título, fecha, hora y lugar son requeridos' })
@@ -23,7 +55,6 @@ router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (r
   try {
     let foto_url = null
 
-    // Subir foto si viene
     if (req.file) {
       const nombreArchivo = `evento_${Date.now()}`
       const { error: uploadError } = await supabase.storage
@@ -37,10 +68,7 @@ router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (r
         return res.status(500).json({ mensaje: 'Error al subir foto', error: uploadError.message })
       }
 
-      const { data } = supabase.storage
-        .from('eventos')
-        .getPublicUrl(nombreArchivo)
-
+      const { data } = supabase.storage.from('eventos').getPublicUrl(nombreArchivo)
       foto_url = data.publicUrl
     }
 
@@ -52,8 +80,14 @@ router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (r
         hora: new Date(`1970-01-01T${hora}:00`),
         lugar,
         distancia_km: distancia_km ? parseFloat(distancia_km) : null,
-        ruta_sugerida: ruta_sugerida || null,
-        foto_url
+        foto_url,
+        es_pago: es_pago === 'true',
+        precio: precio ? parseFloat(precio) : 0,
+        limite_participantes: limite_participantes ? parseInt(limite_participantes) : null,
+        limite_lista_espera: limite_lista_espera ? parseInt(limite_lista_espera) : null,
+        waypoints: waypoints ? JSON.parse(waypoints) : null,
+        punto_inicio: punto_inicio ? JSON.parse(punto_inicio) : null,
+        punto_fin: punto_fin ? JSON.parse(punto_fin) : null
       }
     })
 
@@ -74,12 +108,15 @@ router.get('/', verificarToken, async (req, res) => {
       orderBy: { fecha: 'asc' },
       include: {
         _count: {
-          select: { eventos_usuario: true }
+          select: {
+            eventos_usuario: true,
+            eventos_lista_espera: true
+          }
         }
       }
     })
 
-    const eventosConParticipantes = eventos.map(e => ({
+    const eventosConInfo = eventos.map(e => ({
       id: e.id,
       titulo: e.titulo,
       descripcion: e.descripcion,
@@ -88,12 +125,22 @@ router.get('/', verificarToken, async (req, res) => {
       lugar: e.lugar,
       distancia_km: e.distancia_km,
       foto_url: e.foto_url,
-      ruta_sugerida: e.ruta_sugerida,
+      es_pago: e.es_pago,
+      precio: e.precio,
+      limite_participantes: e.limite_participantes,
+      limite_lista_espera: e.limite_lista_espera,
+      waypoints: e.waypoints,
+      punto_inicio: e.punto_inicio,
+      punto_fin: e.punto_fin,
       creado_en: e.creado_en,
-      participantes: e._count.eventos_usuario
+      participantes_confirmados: e._count.eventos_usuario,
+      en_lista_espera: e._count.eventos_lista_espera,
+      cupo_disponible: e.limite_participantes
+        ? e.limite_participantes - e._count.eventos_usuario
+        : null
     }))
 
-    res.json({ eventos: eventosConParticipantes })
+    res.json({ eventos: eventosConInfo })
 
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al obtener eventos', error: error.message })
@@ -109,14 +156,14 @@ router.get('/:id', verificarToken, async (req, res) => {
         eventos_usuario: {
           include: {
             usuarios: {
-              select: {
-                id: true,
-                nombre: true,
-                avatar_url: true,
-                ciudad: true,
-                nivel: true
-              }
+              select: { id: true, nombre: true, avatar_url: true, ciudad: true, nivel: true }
             }
+          }
+        },
+        _count: {
+          select: {
+            eventos_usuario: true,
+            eventos_lista_espera: true
           }
         }
       }
@@ -126,10 +173,28 @@ router.get('/:id', verificarToken, async (req, res) => {
       return res.status(404).json({ mensaje: 'Evento no encontrado' })
     }
 
-    // Verificar si el usuario logueado ya está inscrito
-    const yaInscrito = evento.eventos_usuario.some(
-      eu => eu.usuario_id === req.usuario.id
-    )
+    // Estado del usuario actual
+    const yaInscrito = evento.eventos_usuario.some(eu => eu.usuario_id === req.usuario.id)
+
+    const enListaEspera = await prisma.eventos_lista_espera.findUnique({
+      where: {
+        evento_id_usuario_id: {
+          evento_id: req.params.id,
+          usuario_id: req.usuario.id
+        }
+      }
+    })
+
+    const miCodigo = yaInscrito
+      ? await prisma.eventos_codigos.findUnique({
+        where: {
+          evento_id_usuario_id: {
+            evento_id: req.params.id,
+            usuario_id: req.usuario.id
+          }
+        }
+      })
+      : null
 
     const participantes = evento.eventos_usuario.map(eu => eu.usuarios)
 
@@ -143,12 +208,28 @@ router.get('/:id', verificarToken, async (req, res) => {
         lugar: evento.lugar,
         distancia_km: evento.distancia_km,
         foto_url: evento.foto_url,
-        ruta_sugerida: evento.ruta_sugerida,
+        es_pago: evento.es_pago,
+        precio: evento.precio,
+        limite_participantes: evento.limite_participantes,
+        limite_lista_espera: evento.limite_lista_espera,
+        waypoints: evento.waypoints,
+        punto_inicio: evento.punto_inicio,
+        punto_fin: evento.punto_fin,
         creado_en: evento.creado_en
       },
       participantes,
-      total_participantes: participantes.length,
-      ya_inscrito: yaInscrito
+      total_participantes: evento._count.eventos_usuario,
+      total_lista_espera: evento._count.eventos_lista_espera,
+      cupo_disponible: evento.limite_participantes
+        ? evento.limite_participantes - evento._count.eventos_usuario
+        : null,
+      ya_inscrito: yaInscrito,
+      en_lista_espera: enListaEspera ? enListaEspera.estado : null,
+      mi_codigo: miCodigo ? {
+        codigo_alfanumerico: miCodigo.codigo_alfanumerico,
+        codigo_qr: miCodigo.codigo_qr,
+        usado: miCodigo.usado
+      } : null
     })
 
   } catch (error) {
@@ -156,31 +237,322 @@ router.get('/:id', verificarToken, async (req, res) => {
   }
 })
 
-// ─── UNIRSE A EVENTO ──────────────────────────────────────
+// ─── INSCRIBIRSE AL EVENTO ────────────────────────────────
 router.post('/:id/unirse', verificarToken, async (req, res) => {
   try {
     const evento = await prisma.eventos.findUnique({
-      where: { id: req.params.id }
+      where: { id: req.params.id },
+      include: {
+        _count: {
+          select: {
+            eventos_usuario: true,
+            eventos_lista_espera: true
+          }
+        }
+      }
     })
 
     if (!evento) {
       return res.status(404).json({ mensaje: 'Evento no encontrado' })
     }
 
-    await prisma.eventos_usuario.create({
-      data: {
-        evento_id: req.params.id,
-        usuario_id: req.usuario.id
+    // Verificar si ya está inscrito o en lista de espera
+    const yaInscrito = await prisma.eventos_usuario.findUnique({
+      where: {
+        evento_id_usuario_id: {
+          evento_id: req.params.id,
+          usuario_id: req.usuario.id
+        }
       }
     })
 
-    res.json({ mensaje: 'Te has inscrito al evento exitosamente ✅' })
-
-  } catch (error) {
-    if (error.code === 'P2002') {
+    if (yaInscrito) {
       return res.status(400).json({ mensaje: 'Ya estás inscrito en este evento' })
     }
-    res.status(500).json({ mensaje: 'Error al unirse al evento', error: error.message })
+
+    const enEspera = await prisma.eventos_lista_espera.findUnique({
+      where: {
+        evento_id_usuario_id: {
+          evento_id: req.params.id,
+          usuario_id: req.usuario.id
+        }
+      }
+    })
+
+    if (enEspera) {
+      return res.status(400).json({ mensaje: 'Ya estás en la lista de espera de este evento' })
+    }
+
+    // Verificar cupo
+    if (evento.limite_participantes) {
+      const cupoLleno = evento._count.eventos_usuario >= evento.limite_participantes
+      if (cupoLleno) {
+        // Verificar cupo en lista de espera
+        if (evento.limite_lista_espera) {
+          const esperaLlena = evento._count.eventos_lista_espera >= evento.limite_lista_espera
+          if (esperaLlena) {
+            return res.status(400).json({ mensaje: 'El evento y la lista de espera están llenos' })
+          }
+        }
+
+        // Agregar a lista de espera
+        await prisma.eventos_lista_espera.create({
+          data: {
+            evento_id: req.params.id,
+            usuario_id: req.usuario.id,
+            estado: 'pendiente'
+          }
+        })
+
+        await notificar(
+          req.usuario.id,
+          'lista_espera_evento',
+          `Te has unido a la lista de espera del evento "${evento.titulo}". El admin revisará tu solicitud.`
+        )
+
+        return res.json({
+          mensaje: 'Agregado a la lista de espera ✅',
+          estado: 'lista_espera'
+        })
+      }
+    }
+
+    // Evento gratuito con cupo disponible — agregar a lista de espera para aprobación
+    if (!evento.es_pago) {
+      await prisma.eventos_lista_espera.create({
+        data: {
+          evento_id: req.params.id,
+          usuario_id: req.usuario.id,
+          estado: 'pendiente'
+        }
+      })
+
+      await notificar(
+        req.usuario.id,
+        'lista_espera_evento',
+        `Te has unido a la lista de espera del evento "${evento.titulo}". El admin revisará tu solicitud.`
+      )
+
+      return res.json({
+        mensaje: 'Solicitud enviada. El admin revisará tu inscripción ✅',
+        estado: 'pendiente'
+      })
+    }
+
+    // Evento de pago — por ahora redirigir a pasarela (placeholder)
+    return res.json({
+      mensaje: 'Evento de pago',
+      estado: 'pago_requerido',
+      precio: evento.precio,
+      evento_id: evento.id
+    })
+
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al inscribirse', error: error.message })
+  }
+})
+
+// ─── ADMITIR O RECHAZAR DE LISTA DE ESPERA (admin) ────────
+router.put('/:id/lista-espera/:usuario_id', verificarToken, verificarAdmin, async (req, res) => {
+  const { accion, motivo } = req.body
+
+  if (!['admitir', 'rechazar'].includes(accion)) {
+    return res.status(400).json({ mensaje: 'Acción inválida. Usa: admitir o rechazar' })
+  }
+
+  try {
+    const evento = await prisma.eventos.findUnique({
+      where: { id: req.params.id },
+      select: { titulo: true, limite_participantes: true }
+    })
+
+    if (!evento) {
+      return res.status(404).json({ mensaje: 'Evento no encontrado' })
+    }
+
+    const solicitud = await prisma.eventos_lista_espera.findUnique({
+      where: {
+        evento_id_usuario_id: {
+          evento_id: req.params.id,
+          usuario_id: req.params.usuario_id
+        }
+      }
+    })
+
+    if (!solicitud) {
+      return res.status(404).json({ mensaje: 'Solicitud no encontrada' })
+    }
+
+    if (solicitud.estado !== 'pendiente') {
+      return res.status(400).json({ mensaje: 'Esta solicitud ya fue procesada' })
+    }
+
+    if (accion === 'rechazar') {
+      await prisma.eventos_lista_espera.update({
+        where: {
+          evento_id_usuario_id: {
+            evento_id: req.params.id,
+            usuario_id: req.params.usuario_id
+          }
+        },
+        data: {
+          estado: 'rechazado',
+          motivo_rechazo: motivo || null
+        }
+      })
+
+      const mensajeRechazo = motivo
+        ? `Tu solicitud para el evento "${evento.titulo}" fue rechazada. Motivo: ${motivo}`
+        : `Tu solicitud para el evento "${evento.titulo}" fue rechazada.`
+
+      await notificar(req.params.usuario_id, 'inscripcion_rechazada', mensajeRechazo)
+
+      return res.json({ mensaje: 'Solicitud rechazada ✅' })
+    }
+
+    // Admitir — verificar cupo nuevamente
+    if (evento.limite_participantes) {
+      const totalInscritos = await prisma.eventos_usuario.count({
+        where: { evento_id: req.params.id }
+      })
+
+      if (totalInscritos >= evento.limite_participantes) {
+        return res.status(400).json({ mensaje: 'El evento ya no tiene cupo disponible' })
+      }
+    }
+
+    // Inscribir al usuario
+    await prisma.eventos_usuario.create({
+      data: {
+        evento_id: req.params.id,
+        usuario_id: req.params.usuario_id
+      }
+    })
+
+    // Actualizar estado en lista de espera
+    await prisma.eventos_lista_espera.update({
+      where: {
+        evento_id_usuario_id: {
+          evento_id: req.params.id,
+          usuario_id: req.params.usuario_id
+        }
+      },
+      data: { estado: 'admitido' }
+    })
+
+    // Generar código único y QR
+    const codigoAlfanumerico = await generarCodigoUnico()
+    const contenidoQR = `RUNN-EVENTO:${req.params.id}:USUARIO:${req.params.usuario_id}:CODIGO:${codigoAlfanumerico}`
+    const codigoQR = await generarQR(contenidoQR)
+
+    await prisma.eventos_codigos.create({
+      data: {
+        evento_id: req.params.id,
+        usuario_id: req.params.usuario_id,
+        codigo_alfanumerico: codigoAlfanumerico,
+        codigo_qr: codigoQR
+      }
+    })
+
+    // Notificar al usuario con su código
+    await notificar(
+      req.params.usuario_id,
+      'inscripcion_admitida',
+      `¡Has sido admitido al evento "${evento.titulo}"! Tu código de acceso es: ${codigoAlfanumerico}`
+    )
+
+    res.json({
+      mensaje: 'Usuario admitido exitosamente ✅',
+      codigo_alfanumerico: codigoAlfanumerico
+    })
+
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al procesar solicitud', error: error.message })
+  }
+})
+
+// ─── VER LISTA DE ESPERA (admin) ──────────────────────────
+router.get('/:id/lista-espera', verificarToken, verificarAdmin, async (req, res) => {
+  try {
+    const lista = await prisma.eventos_lista_espera.findMany({
+      where: { evento_id: req.params.id },
+      include: {
+        usuarios: {
+          select: { id: true, nombre: true, avatar_url: true, ciudad: true, nivel: true }
+        }
+      },
+      orderBy: { creado_en: 'asc' }
+    })
+
+    const pendientes = lista.filter(l => l.estado === 'pendiente')
+    const admitidos = lista.filter(l => l.estado === 'admitido')
+    const rechazados = lista.filter(l => l.estado === 'rechazado')
+
+    res.json({
+      total: lista.length,
+      pendientes: pendientes.length,
+      admitidos: admitidos.length,
+      rechazados: rechazados.length,
+      lista
+    })
+
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al obtener lista de espera', error: error.message })
+  }
+})
+
+// ─── VERIFICAR CÓDIGO EN EL EVENTO (admin) ────────────────
+router.post('/:id/verificar-codigo', verificarToken, verificarAdmin, async (req, res) => {
+  const { codigo } = req.body
+
+  if (!codigo) {
+    return res.status(400).json({ mensaje: 'El código es requerido' })
+  }
+
+  try {
+    const registro = await prisma.eventos_codigos.findFirst({
+      where: {
+        evento_id: req.params.id,
+        codigo_alfanumerico: codigo.toUpperCase()
+      },
+      include: {
+        usuarios: {
+          select: { id: true, nombre: true, avatar_url: true }
+        }
+      }
+    })
+
+    if (!registro) {
+      return res.status(404).json({
+        valido: false,
+        mensaje: 'Código no válido para este evento'
+      })
+    }
+
+    if (registro.usado) {
+      return res.status(400).json({
+        valido: false,
+        mensaje: 'Este código ya fue utilizado',
+        usado_en: registro.usado_en,
+        usuario: registro.usuarios
+      })
+    }
+
+    // Marcar como usado
+    await prisma.eventos_codigos.update({
+      where: { id: registro.id },
+      data: { usado: true, usado_en: new Date() }
+    })
+
+    res.json({
+      valido: true,
+      mensaje: '✅ Acceso permitido',
+      usuario: registro.usuarios,
+      codigo: registro.codigo_alfanumerico
+    })
+
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al verificar código', error: error.message })
   }
 })
 
@@ -188,10 +560,15 @@ router.post('/:id/unirse', verificarToken, async (req, res) => {
 router.delete('/:id/unirse', verificarToken, async (req, res) => {
   try {
     await prisma.eventos_usuario.deleteMany({
-      where: {
-        evento_id: req.params.id,
-        usuario_id: req.usuario.id
-      }
+      where: { evento_id: req.params.id, usuario_id: req.usuario.id }
+    })
+
+    await prisma.eventos_lista_espera.deleteMany({
+      where: { evento_id: req.params.id, usuario_id: req.usuario.id }
+    })
+
+    await prisma.eventos_codigos.deleteMany({
+      where: { evento_id: req.params.id, usuario_id: req.usuario.id }
     })
 
     res.json({ mensaje: 'Te has desinscrito del evento ✅' })
@@ -203,7 +580,11 @@ router.delete('/:id/unirse', verificarToken, async (req, res) => {
 
 // ─── EDITAR EVENTO (solo admin) ───────────────────────────
 router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async (req, res) => {
-  const { titulo, descripcion, fecha, hora, lugar, distancia_km, ruta_sugerida } = req.body
+  const {
+    titulo, descripcion, fecha, hora, lugar, distancia_km,
+    es_pago, precio, limite_participantes, limite_lista_espera,
+    waypoints, punto_inicio, punto_fin
+  } = req.body
 
   try {
     let foto_url = undefined
@@ -221,10 +602,7 @@ router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async 
         return res.status(500).json({ mensaje: 'Error al subir foto', error: uploadError.message })
       }
 
-      const { data } = supabase.storage
-        .from('eventos')
-        .getPublicUrl(nombreArchivo)
-
+      const { data } = supabase.storage.from('eventos').getPublicUrl(nombreArchivo)
       foto_url = data.publicUrl
     }
 
@@ -232,37 +610,26 @@ router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async 
       where: { id: req.params.id },
       data: {
         ...(titulo && { titulo }),
-        ...(descripcion && { descripcion }),
+        ...(descripcion !== undefined && { descripcion }),
         ...(fecha && { fecha: new Date(fecha) }),
         ...(hora && { hora: new Date(`1970-01-01T${hora}:00`) }),
         ...(lugar && { lugar }),
         ...(distancia_km && { distancia_km: parseFloat(distancia_km) }),
-        ...(ruta_sugerida && { ruta_sugerida }),
+        ...(es_pago !== undefined && { es_pago: es_pago === 'true' }),
+        ...(precio !== undefined && { precio: parseFloat(precio) }),
+        ...(limite_participantes !== undefined && { limite_participantes: parseInt(limite_participantes) }),
+        ...(limite_lista_espera !== undefined && { limite_lista_espera: parseInt(limite_lista_espera) }),
+        ...(waypoints !== undefined && { waypoints: JSON.parse(waypoints) }),
+        ...(punto_inicio !== undefined && { punto_inicio: JSON.parse(punto_inicio) }),
+        ...(punto_fin !== undefined && { punto_fin: JSON.parse(punto_fin) }),
         ...(foto_url && { foto_url })
       }
     })
 
-    res.json({
-      mensaje: 'Evento actualizado exitosamente ✅',
-      evento: eventoActualizado
-    })
+    res.json({ mensaje: 'Evento actualizado exitosamente ✅', evento: eventoActualizado })
 
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al actualizar evento', error: error.message })
-  }
-})
-
-// ─── ELIMINAR EVENTO (solo admin) ─────────────────────────
-router.delete('/:id', verificarToken, verificarAdmin, async (req, res) => {
-  try {
-    await prisma.eventos.delete({
-      where: { id: req.params.id }
-    })
-
-    res.json({ mensaje: 'Evento eliminado exitosamente ✅' })
-
-  } catch (error) {
-    res.status(500).json({ mensaje: 'Error al eliminar evento', error: error.message })
   }
 })
 
@@ -275,16 +642,15 @@ router.post('/:id/participantes', verificarToken, verificarAdmin, async (req, re
   }
 
   try {
-    // Verificar que el evento existe
     const evento = await prisma.eventos.findUnique({
-      where: { id: req.params.id }
+      where: { id: req.params.id },
+      select: { titulo: true }
     })
 
     if (!evento) {
       return res.status(404).json({ mensaje: 'Evento no encontrado' })
     }
 
-    // Verificar que el usuario existe
     const usuario = await prisma.usuarios.findUnique({
       where: { id: usuario_id },
       select: { id: true, nombre: true }
@@ -295,14 +661,32 @@ router.post('/:id/participantes', verificarToken, verificarAdmin, async (req, re
     }
 
     await prisma.eventos_usuario.create({
+      data: { evento_id: req.params.id, usuario_id }
+    })
+
+    // Generar código
+    const codigoAlfanumerico = await generarCodigoUnico()
+    const contenidoQR = `RUNN-EVENTO:${req.params.id}:USUARIO:${usuario_id}:CODIGO:${codigoAlfanumerico}`
+    const codigoQR = await generarQR(contenidoQR)
+
+    await prisma.eventos_codigos.create({
       data: {
         evento_id: req.params.id,
-        usuario_id
+        usuario_id,
+        codigo_alfanumerico: codigoAlfanumerico,
+        codigo_qr: codigoQR
       }
     })
 
+    await notificar(
+      usuario_id,
+      'inscripcion_admitida',
+      `¡Has sido inscrito al evento "${evento.titulo}"! Tu código de acceso es: ${codigoAlfanumerico}`
+    )
+
     res.status(201).json({
-      mensaje: `${usuario.nombre} agregado al evento exitosamente ✅`
+      mensaje: `${usuario.nombre} agregado al evento exitosamente ✅`,
+      codigo_alfanumerico: codigoAlfanumerico
     })
 
   } catch (error) {
@@ -317,39 +701,42 @@ router.post('/:id/participantes', verificarToken, verificarAdmin, async (req, re
 router.delete('/:id/participantes/:usuario_id', verificarToken, verificarAdmin, async (req, res) => {
   try {
     const evento = await prisma.eventos.findUnique({
-      where: { id: req.params.id }
+      where: { id: req.params.id },
+      select: { titulo: true }
     })
 
     if (!evento) {
       return res.status(404).json({ mensaje: 'Evento no encontrado' })
     }
 
-    const inscripcion = await prisma.eventos_usuario.findUnique({
-      where: {
-        evento_id_usuario_id: {
-          evento_id: req.params.id,
-          usuario_id: req.params.usuario_id
-        }
-      }
+    await prisma.eventos_usuario.deleteMany({
+      where: { evento_id: req.params.id, usuario_id: req.params.usuario_id }
     })
 
-    if (!inscripcion) {
-      return res.status(404).json({ mensaje: 'El usuario no está inscrito en este evento' })
-    }
-
-    await prisma.eventos_usuario.delete({
-      where: {
-        evento_id_usuario_id: {
-          evento_id: req.params.id,
-          usuario_id: req.params.usuario_id
-        }
-      }
+    await prisma.eventos_codigos.deleteMany({
+      where: { evento_id: req.params.id, usuario_id: req.params.usuario_id }
     })
+
+    await notificar(
+      req.params.usuario_id,
+      'eliminado_evento',
+      `Has sido eliminado del evento "${evento.titulo}".`
+    )
 
     res.json({ mensaje: 'Participante eliminado del evento exitosamente ✅' })
 
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al eliminar participante', error: error.message })
+  }
+})
+
+// ─── ELIMINAR EVENTO (solo admin) ─────────────────────────
+router.delete('/:id', verificarToken, verificarAdmin, async (req, res) => {
+  try {
+    await prisma.eventos.delete({ where: { id: req.params.id } })
+    res.json({ mensaje: 'Evento eliminado exitosamente ✅' })
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al eliminar evento', error: error.message })
   }
 })
 

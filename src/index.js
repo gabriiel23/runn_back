@@ -11,6 +11,9 @@ const gruposRoutes = require('./routes/grupos.routes')
 const novedadesRoutes = require('./routes/novedades.routes')
 const notificacionesRoutes = require('./routes/notificaciones.routes')
 const actividadesRoutes = require('./routes/actividades.routes')
+const retosRoutes = require('./routes/retos.routes')
+
+const { iniciarCron } = require('./services/cron.service')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -26,6 +29,10 @@ app.use('/grupos', gruposRoutes)
 app.use('/novedades', novedadesRoutes)
 app.use('/notificaciones', notificacionesRoutes)
 app.use('/actividades', actividadesRoutes)
+app.use('/retos', retosRoutes)
+
+// Iniciar cron jobs
+iniciarCron()
 
 app.get('/', (req, res) => {
     res.json({ mensaje: 'RUNN API funcionando ✅' })

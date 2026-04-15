@@ -128,6 +128,15 @@ router.put('/:id/finalizar', verificarToken, async (req, res) => {
             }
         })
 
+        const { verificarInsigniasDistancia, verificarRetosDiarios, verificarRetoSemanal } = require('../services/retos.service')
+
+        // Dentro del endpoint finalizar, antes del res.json:
+        const [nuevasInsignias, retoDiario, retoSemanal] = await Promise.all([
+            verificarInsigniasDistancia(req.usuario.id),
+            verificarRetosDiarios(req.usuario.id, actividad),
+            verificarRetoSemanal(req.usuario.id, actividad)
+        ])
+
         res.json({
             mensaje: 'Carrera finalizada exitosamente ✅',
             actividad,
@@ -141,6 +150,11 @@ router.put('/:id/finalizar', verificarToken, async (req, res) => {
                 ritmo_promedio: ritmo_promedio ? parseFloat(ritmo_promedio) : null,
                 calorias: calorias ? parseInt(calorias) : null,
                 puntos_ganados
+            },
+            logros: {
+                nuevas_insignias: nuevasInsignias,
+                reto_diario: retoDiario,
+                reto_semanal: retoSemanal
             }
         })
 
@@ -291,6 +305,81 @@ router.get('/mis-actividades/estadisticas', verificarToken, async (req, res) => 
     }
 })
 
+// ─── RESUMEN HOME ─────────────────────────────────────────
+router.get('/mis-actividades/resumen-home', verificarToken, async (req, res) => {
+    try {
+        const actividades = await prisma.actividades.findMany({
+            where: {
+                usuario_id: req.usuario.id,
+                hora_fin: { not: null }
+            }
+        })
+
+        let distancia_total_km = 0
+        let tiempo_total_segs = 0
+        let sumaFrecuencia = 0
+        let countFrecuencia = 0
+
+        const ahora = new Date()
+        const diaSemana = ahora.getDay() // 0 dom, 1 lun, ..., 6 sab
+        const diffLunes = diaSemana === 0 ? -6 : 1 - diaSemana
+        const lunesSemanaActual = new Date(ahora)
+        lunesSemanaActual.setDate(ahora.getDate() + diffLunes)
+        lunesSemanaActual.setHours(0, 0, 0, 0) // Inicio del lunes
+
+        const barras_dias = [0, 0, 0, 0, 0, 0, 0] // Lun, Mar, Mie, Jue, Vie, Sab, Dom
+        let distancia_semana_km = 0
+
+        actividades.forEach(a => {
+            const dist = parseFloat(a.distancia_km) || 0
+            const segs = a.duracion_segs || 0
+            distancia_total_km += dist
+            tiempo_total_segs += segs
+
+            if (a.frecuencia_cardiaca_promedio) {
+                sumaFrecuencia += a.frecuencia_cardiaca_promedio
+                countFrecuencia++
+            }
+
+            // Datos de la semana actual
+            if (a.hora_inicio >= lunesSemanaActual) {
+                distancia_semana_km += dist
+                let d = a.hora_inicio.getDay() // 0 dom, 1 lun
+                let idx = d === 0 ? 6 : d - 1 // 0=Lun, ..., 6=Dom
+                barras_dias[idx] += dist
+            }
+        })
+
+        // Redondear las barras a 2 decimales
+        for (let i = 0; i < 7; i++) {
+            barras_dias[i] = Math.round(barras_dias[i] * 100) / 100
+        }
+
+        const tiempo_total_horas = Math.round((tiempo_total_segs / 3600) * 100) / 100
+        distancia_total_km = Math.round(distancia_total_km * 100) / 100
+        distancia_semana_km = Math.round(distancia_semana_km * 100) / 100
+        const ritmo_cardiaco_promedio = countFrecuencia > 0 ? Math.round(sumaFrecuencia / countFrecuencia) : 0
+
+        res.json({
+            distancia_total_km,
+            tiempo_total_horas,
+            ritmo_cardiaco_promedio,
+            territorios_nuevos: 0,
+            barras_dias,
+            distancia_semana_km,
+            tendencias: {
+                distancia: "Actividad constante",
+                tiempo: "Buen esfuerzo",
+                territorios: "0 nuevos",
+                ritmo: "Promedio"
+            }
+        })
+
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener resumen home', error: error.message })
+    }
+})
+
 // ─── ACTIVIDADES DE OTRO USUARIO (perfil público) ─────────
 router.get('/usuario/:usuario_id', verificarToken, async (req, res) => {
     try {
@@ -334,118 +423,118 @@ const formatearDuracion = (segs) => {
 
 // ─── AGREGAR FOTO A ACTIVIDAD ─────────────────────────────
 router.post('/:id/foto', verificarToken, upload.single('foto'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ mensaje: 'No se envió ninguna imagen' })
-  }
-
-  try {
-    const actividad = await prisma.actividades.findUnique({
-      where: { id: req.params.id }
-    })
-
-    if (!actividad) {
-      return res.status(404).json({ mensaje: 'Actividad no encontrada' })
+    if (!req.file) {
+        return res.status(400).json({ mensaje: 'No se envió ninguna imagen' })
     }
 
-    if (actividad.usuario_id !== req.usuario.id) {
-      return res.status(403).json({ mensaje: 'No tienes permiso para modificar esta actividad' })
+    try {
+        const actividad = await prisma.actividades.findUnique({
+            where: { id: req.params.id }
+        })
+
+        if (!actividad) {
+            return res.status(404).json({ mensaje: 'Actividad no encontrada' })
+        }
+
+        if (actividad.usuario_id !== req.usuario.id) {
+            return res.status(403).json({ mensaje: 'No tienes permiso para modificar esta actividad' })
+        }
+
+        if (!actividad.hora_fin) {
+            return res.status(400).json({ mensaje: 'No puedes agregar foto a una actividad en curso' })
+        }
+
+        const extension = req.file.mimetype.split('/')[1]
+        const nombreArchivo = `actividad_${req.params.id}.${extension}`
+
+        const { error: uploadError } = await supabase.storage
+            .from('actividades')
+            .upload(nombreArchivo, req.file.buffer, {
+                contentType: req.file.mimetype,
+                upsert: true
+            })
+
+        if (uploadError) {
+            return res.status(500).json({ mensaje: 'Error al subir foto', error: uploadError.message })
+        }
+
+        const { data } = supabase.storage
+            .from('actividades')
+            .getPublicUrl(nombreArchivo)
+
+        await prisma.actividades.update({
+            where: { id: req.params.id },
+            data: { foto_url: data.publicUrl }
+        })
+
+        res.json({
+            mensaje: 'Foto agregada exitosamente ✅',
+            foto_url: data.publicUrl
+        })
+
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al agregar foto', error: error.message })
     }
-
-    if (!actividad.hora_fin) {
-      return res.status(400).json({ mensaje: 'No puedes agregar foto a una actividad en curso' })
-    }
-
-    const extension = req.file.mimetype.split('/')[1]
-    const nombreArchivo = `actividad_${req.params.id}.${extension}`
-
-    const { error: uploadError } = await supabase.storage
-      .from('actividades')
-      .upload(nombreArchivo, req.file.buffer, {
-        contentType: req.file.mimetype,
-        upsert: true
-      })
-
-    if (uploadError) {
-      return res.status(500).json({ mensaje: 'Error al subir foto', error: uploadError.message })
-    }
-
-    const { data } = supabase.storage
-      .from('actividades')
-      .getPublicUrl(nombreArchivo)
-
-    await prisma.actividades.update({
-      where: { id: req.params.id },
-      data: { foto_url: data.publicUrl }
-    })
-
-    res.json({
-      mensaje: 'Foto agregada exitosamente ✅',
-      foto_url: data.publicUrl
-    })
-
-  } catch (error) {
-    res.status(500).json({ mensaje: 'Error al agregar foto', error: error.message })
-  }
 })
 
 // ─── HISTORIAL DE CARRERAS (con foto y stats completas) ───
 router.get('/mis-actividades/historial', verificarToken, async (req, res) => {
-  const { limite = 20, pagina = 1, tipo } = req.query
+    const { limite = 20, pagina = 1, tipo } = req.query
 
-  try {
-    const skip = (parseInt(pagina) - 1) * parseInt(limite)
+    try {
+        const skip = (parseInt(pagina) - 1) * parseInt(limite)
 
-    const actividades = await prisma.actividades.findMany({
-      where: {
-        usuario_id: req.usuario.id,
-        hora_fin: { not: null },
-        ...(tipo && { tipo })
-      },
-      orderBy: { hora_inicio: 'desc' },
-      take: parseInt(limite),
-      skip
-    })
+        const actividades = await prisma.actividades.findMany({
+            where: {
+                usuario_id: req.usuario.id,
+                hora_fin: { not: null },
+                ...(tipo && { tipo })
+            },
+            orderBy: { hora_inicio: 'desc' },
+            take: parseInt(limite),
+            skip
+        })
 
-    const total = await prisma.actividades.count({
-      where: {
-        usuario_id: req.usuario.id,
-        hora_fin: { not: null },
-        ...(tipo && { tipo })
-      }
-    })
+        const total = await prisma.actividades.count({
+            where: {
+                usuario_id: req.usuario.id,
+                hora_fin: { not: null },
+                ...(tipo && { tipo })
+            }
+        })
 
-    const historial = actividades.map(a => ({
-      id: a.id,
-      tipo: a.tipo,
-      modalidad: a.modalidad,
-      fecha: a.hora_inicio,
-      hora_inicio: a.hora_inicio,
-      hora_fin: a.hora_fin,
-      distancia_km: a.distancia_km,
-      duracion_segs: a.duracion_segs,
-      duracion_formateada: formatearDuracion(a.duracion_segs),
-      velocidad_promedio: a.velocidad_promedio,
-      velocidad_max: a.velocidad_max,
-      ritmo_promedio: a.ritmo_promedio,
-      calorias: a.calorias,
-      elevacion_ganada_m: a.elevacion_ganada_m,
-      pasos: a.pasos,
-      frecuencia_cardiaca_promedio: a.frecuencia_cardiaca_promedio,
-      puntos_ganados: a.puntos_ganados,
-      foto_url: a.foto_url,
-      compartida: a.compartida
-    }))
+        const historial = actividades.map(a => ({
+            id: a.id,
+            tipo: a.tipo,
+            modalidad: a.modalidad,
+            fecha: a.hora_inicio,
+            hora_inicio: a.hora_inicio,
+            hora_fin: a.hora_fin,
+            distancia_km: a.distancia_km,
+            duracion_segs: a.duracion_segs,
+            duracion_formateada: formatearDuracion(a.duracion_segs),
+            velocidad_promedio: a.velocidad_promedio,
+            velocidad_max: a.velocidad_max,
+            ritmo_promedio: a.ritmo_promedio,
+            calorias: a.calorias,
+            elevacion_ganada_m: a.elevacion_ganada_m,
+            pasos: a.pasos,
+            frecuencia_cardiaca_promedio: a.frecuencia_cardiaca_promedio,
+            puntos_ganados: a.puntos_ganados,
+            foto_url: a.foto_url,
+            compartida: a.compartida
+        }))
 
-    res.json({
-      total,
-      pagina: parseInt(pagina),
-      total_paginas: Math.ceil(total / parseInt(limite)),
-      historial
-    })
+        res.json({
+            total,
+            pagina: parseInt(pagina),
+            total_paginas: Math.ceil(total / parseInt(limite)),
+            historial
+        })
 
-  } catch (error) {
-    res.status(500).json({ mensaje: 'Error al obtener historial', error: error.message })
-  }
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener historial', error: error.message })
+    }
 })
 
 // ─── VER DETALLE DE ACTIVIDAD (debe ir AL FINAL — después de todas las rutas específicas) ─
