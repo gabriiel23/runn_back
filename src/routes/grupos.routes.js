@@ -257,6 +257,12 @@ router.get('/:id', verificarToken, async (req, res) => {
             return res.status(404).json({ mensaje: 'Grupo no encontrado' })
         }
 
+        // Obtener posibles disputas activas
+        const disputaActiva = await prisma.territorio_disputas_grupales.findFirst({
+            where: { grupo_id: req.params.id, estado: 'activa' },
+            include: { territorios: { select: { nombre: true } } }
+        })
+
         // Verificar si el usuario logueado es miembro
         const miMembresía = grupo.miembros_grupo.find(m => m.usuario_id === req.usuario.id)
 
@@ -298,7 +304,13 @@ router.get('/:id', verificarToken, async (req, res) => {
             mi_rol: miMembresía?.rol || null,
             retos: grupo.grupo_retos,
             actividades: grupo.grupo_actividades,
-            multimedia: grupo.grupo_multimedia
+            multimedia: grupo.grupo_multimedia,
+            disputa_activa: disputaActiva ? {
+                id: disputaActiva.id,
+                territorio_id: disputaActiva.territorio_id,
+                territorio_nombre: disputaActiva.territorios.nombre,
+                expira_en: disputaActiva.expira_en
+            } : null
         })
 
     } catch (error) {

@@ -12,6 +12,7 @@ const novedadesRoutes = require('./routes/novedades.routes')
 const notificacionesRoutes = require('./routes/notificaciones.routes')
 const actividadesRoutes = require('./routes/actividades.routes')
 const retosRoutes = require('./routes/retos.routes')
+const territoriosRoutes = require('./routes/territorios.routes')
 
 const { iniciarCron } = require('./services/cron.service')
 
@@ -30,6 +31,7 @@ app.use('/novedades', novedadesRoutes)
 app.use('/notificaciones', notificacionesRoutes)
 app.use('/actividades', actividadesRoutes)
 app.use('/retos', retosRoutes)
+app.use('/territorios', territoriosRoutes)
 
 // Iniciar cron jobs
 iniciarCron()

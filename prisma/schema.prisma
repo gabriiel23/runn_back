@@ -30,6 +30,9 @@ model actividades {
   usuarios                    usuarios?             @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   disputas_territorio         disputas_territorio[]
   foto_url                    String?
+
+  territorios_historial         territorios_historial[]
+  territorio_aportes_grupales   territorio_aportes_grupales[]
 }
 
 model disputas_territorio {
@@ -61,6 +64,9 @@ model eventos {
   waypoints             Json?
   punto_inicio          Json?
   punto_fin             Json?
+  indicaciones          Json?
+  cuentas_bancarias     Json?
+  finalizado            Boolean?                @default(false)
   creado_en             DateTime?               @default(now()) @db.Timestamp(6)
   eventos_usuario       eventos_usuario[]
   eventos_lista_espera  eventos_lista_espera[]
@@ -73,6 +79,7 @@ model eventos_lista_espera {
   usuario_id       String?   @db.Uuid
   estado           String?   @default("pendiente") @db.VarChar(20)
   motivo_rechazo   String?
+  comprobante_url  String?
   creado_en        DateTime? @default(now()) @db.Timestamp(6)
   eventos          eventos?  @relation(fields: [evento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   usuarios         usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -125,6 +132,10 @@ model grupos {
   grupo_retos         grupo_retos[]
   grupo_actividades   grupo_actividades[]
   grupo_invitaciones  grupo_invitaciones[]
+
+  territorios_record            territorios[] @relation("territorio_record_grupo")
+  territorios_historial         territorios_historial[]
+  territorio_disputas_grupales  territorio_disputas_grupales[]
 }
 
 model grupo_multimedia {
@@ -302,18 +313,46 @@ model seguimientos {
 }
 
 model territorios {
-  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nombre               String                @db.VarChar(100)
-  poligono             String
-  propietario_id       String?               @db.Uuid
-  grupo_propietario_id String?               @db.Uuid
-  conquistado_en       DateTime?             @db.Timestamp(6)
-  ultima_disputa_en    DateTime?             @db.Timestamp(6)
-  veces_disputado      Int?                  @default(0)
-  creado_en            DateTime?             @default(now()) @db.Timestamp(6)
-  disputas_territorio  disputas_territorio[]
-  grupos               grupos?               @relation(fields: [grupo_propietario_id], references: [id], onUpdate: NoAction, map: "fk_grupo_propietario")
-  usuarios             usuarios?             @relation(fields: [propietario_id], references: [id], onUpdate: NoAction)
+  id                          String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre                      String                  @db.VarChar(100)
+  descripcion                 String?
+  poligono                    String
+  propietario_id              String?                 @db.Uuid
+  grupo_propietario_id        String?                 @db.Uuid
+  conquistado_en              DateTime?               @db.Timestamp(6)
+  ultima_disputa_en           DateTime?               @db.Timestamp(6)
+  veces_disputado             Int?                    @default(0)
+  tiempo_record_segs          Int?
+  tiempo_record_usuario_id    String?                 @db.Uuid
+  tiempo_record_grupo_id      String?                 @db.Uuid
+  total_defensas              Int?                    @default(0)
+  modalidad                   String?                 @default("individual") @db.VarChar(20)
+  creado_en                   DateTime?               @default(now()) @db.Timestamp(6)
+  disputas_territorio         disputas_territorio[]
+  territorios_historial       territorios_historial[]
+  grupos                      grupos?                 @relation(fields: [grupo_propietario_id], references: [id], onUpdate: NoAction, map: "fk_grupo_propietario")
+  usuarios                    usuarios?               @relation(fields: [propietario_id], references: [id], onUpdate: NoAction)
+  usuarios_record             usuarios?               @relation("territorio_record_usuario", fields: [tiempo_record_usuario_id], references: [id], onUpdate: NoAction)
+  grupos_record                 grupos?                 @relation("territorio_record_grupo", fields: [tiempo_record_grupo_id], references: [id], onUpdate: NoAction)
+  territorio_disputas_grupales  territorio_disputas_grupales[]
+}
+
+model territorios_historial {
+  id                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  territorio_id         String?      @db.Uuid
+  usuario_id            String?      @db.Uuid
+  grupo_id              String?      @db.Uuid
+  actividad_id          String?      @db.Uuid
+  tipo                  String       @db.VarChar(20)
+  resultado             String       @db.VarChar(20)
+  tiempo_segs           Int
+  tiempo_anterior_segs  Int?
+  modalidad             String?      @default("individual") @db.VarChar(20)
+  creado_en             DateTime?    @default(now()) @db.Timestamp(6)
+  territorios           territorios? @relation(fields: [territorio_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios              usuarios?    @relation(fields: [usuario_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  grupos                grupos?      @relation(fields: [grupo_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  actividades           actividades? @relation(fields: [actividad_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 }
 
 model usuarios {
@@ -364,6 +403,11 @@ model usuarios {
   usuario_racha                                   usuario_racha?
   eventos_lista_espera                            eventos_lista_espera[]
   eventos_codigos                                 eventos_codigos[]
+
+  territorios_record                              territorios[] @relation("territorio_record_usuario")
+  territorios_historial                           territorios_historial[]
+  territorio_disputas_grupales                    territorio_disputas_grupales[]
+  territorio_aportes_grupales                     territorio_aportes_grupales[]
 
   // ROLES
   rol              String?   @default("usuario") @db.VarChar(20)
@@ -489,4 +533,33 @@ model usuario_racha {
   ultima_semana_completada DateTime? @db.Date
   actualizado_en           DateTime? @default(now()) @db.Timestamp(6)
   usuarios                 usuarios? @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model territorio_disputas_grupales {
+  id                      String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  territorio_id           String?      @db.Uuid
+  grupo_id                String?      @db.Uuid
+  iniciado_por_usuario_id String?      @db.Uuid
+  estado                  String?      @default("activa") @db.VarChar(20)
+  creada_en               DateTime?    @default(now()) @db.Timestamp(6)
+  expira_en               DateTime?    @db.Timestamp(6)
+  
+  territorios             territorios? @relation(fields: [territorio_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  grupos                  grupos?      @relation(fields: [grupo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios                usuarios?    @relation(fields: [iniciado_por_usuario_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  territorio_aportes_grupales territorio_aportes_grupales[]
+}
+
+model territorio_aportes_grupales {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  disputa_id    String?      @db.Uuid
+  usuario_id    String?      @db.Uuid
+  actividad_id  String?      @db.Uuid
+  tiempo_segs   Int
+  creado_en     DateTime?    @default(now()) @db.Timestamp(6)
+
+  disputas      territorio_disputas_grupales? @relation(fields: [disputa_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuarios      usuarios?    @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  actividades   actividades? @relation(fields: [actividad_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 }

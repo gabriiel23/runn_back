@@ -237,6 +237,19 @@ router.post('/generar/diario', verificarToken, verificarAdmin, async (req, res) 
             fecha.setDate(fecha.getDate() + 1)
         }
         const reto = await crearRetoDiarioIA(fecha)
+
+        // Notificar a todos los usuarios del nuevo reto diario
+        const usuarios = await prisma.usuarios.findMany({ select: { id: true } })
+        if (usuarios.length > 0) {
+            await prisma.notificaciones.createMany({
+                data: usuarios.map(u => ({
+                    usuario_id: u.id,
+                    tipo: 'reto_diario_nuevo',
+                    mensaje: `🔥 ¡Nuevo reto diario disponible! "${reto.titulo}" — ¡Completa ${reto.valor_objetivo} ${reto.unidad} hoy! reto_id:${reto.id}`
+                }))
+            })
+        }
+
         res.json({ mensaje: 'Reto diario generado ✅', reto })
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al generar reto', error: error.message })
@@ -251,6 +264,19 @@ router.post('/generar/semanal', verificarToken, verificarAdmin, async (req, res)
             fecha.setDate(fecha.getDate() + 7)
         }
         const reto = await crearRetoSemanalIA(fecha)
+
+        // Notificar a todos los usuarios del nuevo reto semanal
+        const usuarios = await prisma.usuarios.findMany({ select: { id: true } })
+        if (usuarios.length > 0) {
+            await prisma.notificaciones.createMany({
+                data: usuarios.map(u => ({
+                    usuario_id: u.id,
+                    tipo: 'reto_semanal_nuevo',
+                    mensaje: `📅 ¡Nuevo reto semanal disponible! "${reto.titulo}" — ¡Completa ${reto.valor_objetivo} ${reto.unidad} esta semana! reto_id:${reto.id}`
+                }))
+            })
+        }
+
         res.json({ mensaje: 'Reto semanal generado ✅', reto })
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al generar reto', error: error.message })
@@ -422,4 +448,131 @@ router.delete('/semanal/:id', verificarToken, verificarAdmin, async (req, res) =
     }
 })
 
-module.exports = router 
+// ─── REGISTRAR PROGRESO RETO DIARIO (con notificaciones) ──
+router.post('/diario/:id/progreso', verificarToken, async (req, res) => {
+    const { progreso_actual } = req.body
+    if (progreso_actual === undefined) {
+        return res.status(400).json({ mensaje: 'progreso_actual es requerido' })
+    }
+
+    try {
+        const reto = await prisma.retos_diarios.findUnique({ where: { id: req.params.id } })
+        if (!reto) return res.status(404).json({ mensaje: 'Reto no encontrado' })
+
+        const progreso = parseFloat(progreso_actual)
+        const objetivo = parseFloat(reto.valor_objetivo)
+        const completado = progreso >= objetivo
+        const porcentaje = Math.min((progreso / objetivo) * 100, 100)
+
+        const participacion = await prisma.retos_diarios_usuario.upsert({
+            where: {
+                usuario_id_reto_id: { usuario_id: req.usuario.id, reto_id: req.params.id }
+            },
+            update: { progreso_actual: progreso, completado },
+            create: {
+                usuario_id: req.usuario.id,
+                reto_id: req.params.id,
+                progreso_actual: progreso,
+                completado
+            }
+        })
+
+        // Notificaciones de progreso
+        if (completado) {
+            await prisma.notificaciones.create({
+                data: {
+                    usuario_id: req.usuario.id,
+                    tipo: 'reto_completado',
+                    mensaje: `🏆 ¡Completaste el reto "${reto.titulo}"! Ganaste ${reto.puntos_recompensa} puntos. reto_id:${reto.id}`
+                }
+            })
+        } else if (porcentaje >= 80) {
+            // Solo notificar una vez al llegar al 80%
+            const yaNotificado = await prisma.notificaciones.findFirst({
+                where: {
+                    usuario_id: req.usuario.id,
+                    tipo: 'reto_cerca_completar',
+                    mensaje: { contains: `reto_id:${reto.id}` }
+                }
+            })
+            if (!yaNotificado) {
+                await prisma.notificaciones.create({
+                    data: {
+                        usuario_id: req.usuario.id,
+                        tipo: 'reto_cerca_completar',
+                        mensaje: `⚡ ¡Estás al ${Math.round(porcentaje)}% del reto "${reto.titulo}"! ¡Ya casi lo logras! reto_id:${reto.id}`
+                    }
+                })
+            }
+        }
+
+        res.json({ participacion, porcentaje: Math.round(porcentaje) })
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al actualizar progreso', error: error.message })
+    }
+})
+
+// ─── REGISTRAR PROGRESO RETO SEMANAL (con notificaciones) ─
+router.post('/semanal/:id/progreso', verificarToken, async (req, res) => {
+    const { progreso_actual } = req.body
+    if (progreso_actual === undefined) {
+        return res.status(400).json({ mensaje: 'progreso_actual es requerido' })
+    }
+
+    try {
+        const reto = await prisma.retos_semanales.findUnique({ where: { id: req.params.id } })
+        if (!reto) return res.status(404).json({ mensaje: 'Reto no encontrado' })
+
+        const progreso = parseFloat(progreso_actual)
+        const objetivo = parseFloat(reto.valor_objetivo)
+        const completado = progreso >= objetivo
+        const porcentaje = Math.min((progreso / objetivo) * 100, 100)
+
+        const participacion = await prisma.retos_semanales_usuario.upsert({
+            where: {
+                usuario_id_reto_id: { usuario_id: req.usuario.id, reto_id: req.params.id }
+            },
+            update: { progreso_actual: progreso, completado },
+            create: {
+                usuario_id: req.usuario.id,
+                reto_id: req.params.id,
+                progreso_actual: progreso,
+                completado
+            }
+        })
+
+        // Notificaciones de progreso
+        if (completado) {
+            await prisma.notificaciones.create({
+                data: {
+                    usuario_id: req.usuario.id,
+                    tipo: 'reto_completado',
+                    mensaje: `🏆 ¡Completaste el reto semanal "${reto.titulo}"! Ganaste ${reto.puntos_recompensa} puntos. reto_id:${reto.id}`
+                }
+            })
+        } else if (porcentaje >= 80) {
+            const yaNotificado = await prisma.notificaciones.findFirst({
+                where: {
+                    usuario_id: req.usuario.id,
+                    tipo: 'reto_cerca_completar',
+                    mensaje: { contains: `reto_id:${reto.id}` }
+                }
+            })
+            if (!yaNotificado) {
+                await prisma.notificaciones.create({
+                    data: {
+                        usuario_id: req.usuario.id,
+                        tipo: 'reto_cerca_completar',
+                        mensaje: `⚡ ¡Estás al ${Math.round(porcentaje)}% del reto semanal "${reto.titulo}"! ¡Ya casi lo logras! reto_id:${reto.id}`
+                    }
+                })
+            }
+        }
+
+        res.json({ participacion, porcentaje: Math.round(porcentaje) })
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al actualizar progreso', error: error.message })
+    }
+})
+
+module.exports = router

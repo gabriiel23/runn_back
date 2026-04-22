@@ -45,7 +45,7 @@ router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (r
   const {
     titulo, descripcion, fecha, hora, lugar, distancia_km,
     es_pago, precio, limite_participantes, limite_lista_espera,
-    waypoints, punto_inicio, punto_fin
+    waypoints, punto_inicio, punto_fin, indicaciones, cuentas_bancarias
   } = req.body
 
   if (!titulo || !fecha || !hora || !lugar) {
@@ -87,8 +87,20 @@ router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (r
         limite_lista_espera: limite_lista_espera ? parseInt(limite_lista_espera) : null,
         waypoints: waypoints ? JSON.parse(waypoints) : null,
         punto_inicio: punto_inicio ? JSON.parse(punto_inicio) : null,
-        punto_fin: punto_fin ? JSON.parse(punto_fin) : null
+        punto_fin: punto_fin ? JSON.parse(punto_fin) : null,
+        indicaciones: indicaciones ? JSON.parse(indicaciones) : null,
+        cuentas_bancarias: cuentas_bancarias ? JSON.parse(cuentas_bancarias) : null
       }
+    })
+
+    // Notificar a todos los usuarios registrados
+    const todosLosUsuarios = await prisma.usuarios.findMany({ select: { id: true } })
+    await prisma.notificaciones.createMany({
+      data: todosLosUsuarios.map(u => ({
+        usuario_id: u.id,
+        tipo: 'nuevo_evento',
+        mensaje: `¡Hay un nuevo evento disponible! "${nuevoEvento.titulo}" — ¡únete ahora! evento_id:${nuevoEvento.id}`
+      }))
     })
 
     res.status(201).json({
@@ -132,6 +144,9 @@ router.get('/', verificarToken, async (req, res) => {
       waypoints: e.waypoints,
       punto_inicio: e.punto_inicio,
       punto_fin: e.punto_fin,
+      indicaciones: e.indicaciones,
+      cuentas_bancarias: e.cuentas_bancarias,
+      finalizado: e.finalizado ?? false,
       creado_en: e.creado_en,
       participantes_confirmados: e._count.eventos_usuario,
       en_lista_espera: e._count.eventos_lista_espera,
@@ -215,6 +230,10 @@ router.get('/:id', verificarToken, async (req, res) => {
         waypoints: evento.waypoints,
         punto_inicio: evento.punto_inicio,
         punto_fin: evento.punto_fin,
+        indicaciones: evento.indicaciones,
+        cuentas_bancarias: evento.cuentas_bancarias,
+        finalizado: evento.finalizado ?? false,
+        participantes_confirmados: evento._count.eventos_usuario,
         creado_en: evento.creado_en
       },
       participantes,
@@ -352,6 +371,91 @@ router.post('/:id/unirse', verificarToken, async (req, res) => {
   }
 })
 
+// ─── INSCRIBIRSE A EVENTO DE PAGO CON COMPROBANTE ──────────
+router.post('/:id/unirse-pago', verificarToken, upload.single('comprobante'), async (req, res) => {
+  try {
+    const evento = await prisma.eventos.findUnique({
+      where: { id: req.params.id },
+      include: {
+        _count: {
+          select: { eventos_usuario: true, eventos_lista_espera: true }
+        }
+      }
+    });
+
+    if (!evento) return res.status(404).json({ mensaje: 'Evento no encontrado' });
+    if (!evento.es_pago) return res.status(400).json({ mensaje: 'Este evento no es de pago. Usa la inscripción normal.' });
+    if (!req.file) return res.status(400).json({ mensaje: 'El comprobante de pago es requerido' });
+
+    // Verificar si ya está inscrito
+    const yaInscrito = await prisma.eventos_usuario.findUnique({
+      where: { evento_id_usuario_id: { evento_id: req.params.id, usuario_id: req.usuario.id } }
+    });
+    if (yaInscrito) return res.status(400).json({ mensaje: 'Ya estás inscrito en este evento' });
+
+    // Si ya está en espera, actualizar el comprobante si fue rechazado antes, o simplemente actualizar.
+    const enEspera = await prisma.eventos_lista_espera.findUnique({
+      where: { evento_id_usuario_id: { evento_id: req.params.id, usuario_id: req.usuario.id } }
+    });
+
+    if (enEspera && enEspera.estado !== 'rechazado') {
+        return res.status(400).json({ mensaje: 'Ya estás en la lista de espera (Estado: ' + enEspera.estado + ')' });
+    }
+
+    // Verificar cupo del evento
+    if (evento.limite_participantes && evento._count.eventos_usuario >= evento.limite_participantes) {
+      if (evento.limite_lista_espera && evento._count.eventos_lista_espera >= evento.limite_lista_espera) {
+        return res.status(400).json({ mensaje: 'El evento y la lista de espera están llenos' });
+      }
+    }
+
+    // Subir comprobante a Supabase
+    const nombreArchivo = `comprobante_${req.params.id}_${req.usuario.id}_${Date.now()}`;
+    const { error: uploadError } = await supabase.storage
+      .from('eventos')
+      .upload(nombreArchivo, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false
+      });
+
+    if (uploadError) {
+      return res.status(500).json({ mensaje: 'Error al subir comprobante', error: uploadError.message });
+    }
+
+    const { data } = supabase.storage.from('eventos').getPublicUrl(nombreArchivo);
+    const comprobante_url = data.publicUrl;
+
+    if (enEspera) {
+      // Re-enviar comprobante por rechazo anterior
+      await prisma.eventos_lista_espera.update({
+        where: { id: enEspera.id },
+        data: { estado: 'pendiente', comprobante_url, motivo_rechazo: null }
+      });
+      await notificar(req.usuario.id, 'lista_espera_evento', `Tu comprobante para "${evento.titulo}" se re-envió correctamente.`);
+    } else {
+      // Crear nueva solicitud
+      await prisma.eventos_lista_espera.create({
+        data: {
+          evento_id: req.params.id,
+          usuario_id: req.usuario.id,
+          estado: 'pendiente',
+          comprobante_url
+        }
+      });
+      await notificar(req.usuario.id, 'lista_espera_evento', `Comprobante de pago enviado para "${evento.titulo}". El admin lo validará pronto.`);
+    }
+
+    return res.json({
+      mensaje: 'Comprobante recibido ✅. En espera de validación.',
+      estado: 'pendiente'
+    });
+
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al enviar comprobante', error: error.message });
+  }
+})
+
+
 // ─── ADMITIR O RECHAZAR DE LISTA DE ESPERA (admin) ────────
 router.put('/:id/lista-espera/:usuario_id', verificarToken, verificarAdmin, async (req, res) => {
   const { accion, motivo } = req.body
@@ -458,7 +562,7 @@ router.put('/:id/lista-espera/:usuario_id', verificarToken, verificarAdmin, asyn
     await notificar(
       req.params.usuario_id,
       'inscripcion_admitida',
-      `¡Has sido admitido al evento "${evento.titulo}"! Tu código de acceso es: ${codigoAlfanumerico}`
+      `¡Has sido admitido al evento "${evento.titulo}"! Tu código de acceso es: ${codigoAlfanumerico} evento_id:${req.params.id}`
     )
 
     res.json({
@@ -524,16 +628,18 @@ router.post('/:id/verificar-codigo', verificarToken, verificarAdmin, async (req,
 
     if (!registro) {
       return res.status(404).json({
+        status: 'invalido',
         valido: false,
         mensaje: 'Código no válido para este evento'
       })
     }
 
     if (registro.usado) {
-      return res.status(400).json({
+      return res.status(200).json({
+        status: 'usado',
         valido: false,
         mensaje: 'Este código ya fue utilizado',
-        usado_en: registro.usado_en,
+        verificado_en: registro.usado_en,
         usuario: registro.usuarios
       })
     }
@@ -545,6 +651,7 @@ router.post('/:id/verificar-codigo', verificarToken, verificarAdmin, async (req,
     })
 
     res.json({
+      status: 'valido',
       valido: true,
       mensaje: '✅ Acceso permitido',
       usuario: registro.usuarios,
@@ -553,6 +660,69 @@ router.post('/:id/verificar-codigo', verificarToken, verificarAdmin, async (req,
 
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al verificar código', error: error.message })
+  }
+})
+
+// ─── VER LISTA DE ESCANEADOS (admin) ──────────────────────
+router.get('/:id/escaneados', verificarToken, verificarAdmin, async (req, res) => {
+  try {
+    const escaneados = await prisma.eventos_codigos.findMany({
+      where: { evento_id: req.params.id, usado: true },
+      include: {
+        usuarios: {
+          select: { id: true, nombre: true, avatar_url: true, ciudad: true, nivel: true }
+        }
+      },
+      orderBy: { usado_en: 'asc' }
+    })
+
+    res.json({
+      total: escaneados.length,
+      escaneados: escaneados.map(e => ({
+        codigo_alfanumerico: e.codigo_alfanumerico,
+        usado_en: e.usado_en,
+        usuario: e.usuarios
+      }))
+    })
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al obtener escaneados', error: error.message })
+  }
+})
+
+// ─── FINALIZAR EVENTO (admin) ──────────────────────────────
+router.put('/:id/finalizar', verificarToken, verificarAdmin, async (req, res) => {
+  try {
+    const eventoInfo = await prisma.eventos.findUnique({
+      where: { id: req.params.id },
+      select: { titulo: true }
+    })
+
+    await prisma.eventos.update({
+      where: { id: req.params.id },
+      data: { finalizado: true }
+    })
+
+    // Notificar a todos los participantes del evento
+    if (eventoInfo) {
+      const participantes = await prisma.eventos_usuario.findMany({
+        where: { evento_id: req.params.id },
+        select: { usuario_id: true }
+      })
+
+      if (participantes.length > 0) {
+        await prisma.notificaciones.createMany({
+          data: participantes.map(p => ({
+            usuario_id: p.usuario_id,
+            tipo: 'evento_finalizado',
+            mensaje: `El evento "${eventoInfo.titulo}" ha finalizado. ¡Gracias por participar! evento_id:${req.params.id}`
+          }))
+        })
+      }
+    }
+
+    res.json({ mensaje: 'Evento finalizado exitosamente ✅' })
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al finalizar evento', error: error.message })
   }
 })
 
@@ -583,7 +753,7 @@ router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async 
   const {
     titulo, descripcion, fecha, hora, lugar, distancia_km,
     es_pago, precio, limite_participantes, limite_lista_espera,
-    waypoints, punto_inicio, punto_fin
+    waypoints, punto_inicio, punto_fin, indicaciones, cuentas_bancarias
   } = req.body
 
   try {
@@ -622,6 +792,8 @@ router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async 
         ...(waypoints !== undefined && { waypoints: JSON.parse(waypoints) }),
         ...(punto_inicio !== undefined && { punto_inicio: JSON.parse(punto_inicio) }),
         ...(punto_fin !== undefined && { punto_fin: JSON.parse(punto_fin) }),
+        ...(indicaciones !== undefined && { indicaciones: JSON.parse(indicaciones) }),
+        ...(cuentas_bancarias !== undefined && { cuentas_bancarias: JSON.parse(cuentas_bancarias) }),
         ...(foto_url && { foto_url })
       }
     })
