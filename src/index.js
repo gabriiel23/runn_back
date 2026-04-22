@@ -17,7 +17,7 @@ const territoriosRoutes = require('./routes/territorios.routes')
 const { iniciarCron } = require('./services/cron.service')
 
 const app = express()
-const PORT = process.env.PORT || 3000
+const PORT = process.env.PORT || 8005
 
 app.use(cors())
 app.use(express.json())
