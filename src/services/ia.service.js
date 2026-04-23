@@ -43,4 +43,19 @@ Ejemplos: corre 20km esta semana, acumula 3 horas corriendo, completa carreras q
     return JSON.parse(texto)
 }
 
-module.exports = { generarRetoDiario, generarRetoSemanal }
+const generarFraseMotivacional = async () => {
+    const prompt = `Eres un coach de running y bienestar. Genera UNA frase motivacional inspiradora para corredores.
+La frase debe ser poderosa, corta (máximo 15 palabras) y su autor debe ser real o puede ser "RUNN" si es original.
+Responde SOLO con este JSON sin texto adicional ni backticks ni markdown:
+{
+  "frase": "texto de la frase motivacional",
+  "autor": "Nombre del autor o RUNN"
+}
+Ejemplos de frases: "El dolor que sientes hoy será la fuerza que sientas mañana.", "Cada kilómetro te acerca a tu mejor versión."`
+
+    const result = await model.generateContent(prompt)
+    const texto = result.response.text().trim()
+    return JSON.parse(texto)
+}
+
+module.exports = { generarRetoDiario, generarRetoSemanal, generarFraseMotivacional }
