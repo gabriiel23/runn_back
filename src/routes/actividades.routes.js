@@ -559,15 +559,57 @@ router.get('/:id', verificarToken, async (req, res) => {
             return res.status(404).json({ mensaje: 'Actividad no encontrada' })
         }
 
+        // Parsear LINESTRING a JSON si existe
+        let puntosRuta = null
+        if (actividad.ruta && typeof actividad.ruta === 'string' && actividad.ruta.startsWith('LINESTRING')) {
+            const match = actividad.ruta.match(/LINESTRING\((.*)\)/)
+            if (match && match[1]) {
+                const pares = match[1].split(', ')
+                puntosRuta = pares.map(par => {
+                    const [lng, lat] = par.split(' ').map(Number)
+                    return { lat, lng }
+                })
+            }
+        }
+
         res.json({
             actividad: {
                 ...actividad,
-                duracion_formateada: formatearDuracion(actividad.duracion_segs)
+                duracion_formateada: formatearDuracion(actividad.duracion_segs),
+                puntos_ruta: puntosRuta
             }
         })
 
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al obtener actividad', error: error.message })
+    }
+})
+
+// ─── ELIMINAR ACTIVIDAD (Descartar) ───────────────────────
+router.delete('/:id', verificarToken, async (req, res) => {
+    try {
+        const actividad = await prisma.actividades.findUnique({
+            where: { id: req.params.id }
+        })
+
+        if (!actividad) {
+            return res.status(404).json({ mensaje: 'Actividad no encontrada' })
+        }
+
+        if (actividad.usuario_id !== req.usuario.id) {
+            return res.status(403).json({ mensaje: 'No tienes permiso para eliminar esta actividad' })
+        }
+
+        // Eliminamos la actividad (Prisma debe lidiar con cascadas si las hay en el schema)
+        await prisma.actividades.delete({
+            where: { id: req.params.id }
+        })
+
+        res.json({ mensaje: 'Actividad descartada/eliminada exitosamente ✅' })
+
+    } catch (error) {
+        console.error('Error al eliminar actividad:', error)
+        res.status(500).json({ mensaje: 'Error al eliminar actividad', error: error.message })
     }
 })
 
