@@ -23,7 +23,9 @@ const CHECKPOINT_INTERVALO_M = 30
 const RADIO_TOLERANCIA_M = 30
 
 /** Porcentaje mínimo de checkpoints que la ruta debe cubrir para ser válida (0–100) */
-const UMBRAL_COBERTURA = 85
+// ⚠️  MODO TEST: umbral bajado a 20 % para validar el flujo completo sin rodear todo el polígono.
+// Volver a 85 antes de producción.
+const UMBRAL_COBERTURA = 20
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

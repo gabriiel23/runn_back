@@ -1,5 +1,16 @@
 const prisma = require('../prisma')
-const { notificar } = require('./notificaciones.service')
+
+// Función helper para crear notificaciones (inline para evitar dependencias circulares)
+const notificar = async (usuarioId, tipo, mensaje) => {
+    if (!usuarioId) return
+    try {
+        await prisma.notificaciones.create({
+            data: { usuario_id: usuarioId, tipo, mensaje }
+        })
+    } catch (e) {
+        console.error('[notificar] Error al crear notificación:', e.message)
+    }
+}
 
 const formatearTiempo = (segs) => {
     if (!segs) return '00:00:00'

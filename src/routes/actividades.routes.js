@@ -61,6 +61,9 @@ router.put('/:id/finalizar', verificarToken, async (req, res) => {
     }
 
     try {
+        console.log('[FINALIZAR] actividadId:', req.params.id)
+        console.log('[FINALIZAR] body recibido:', JSON.stringify(req.body).substring(0, 200))
+
         // Verificar que la actividad pertenece al usuario
         const actividadExistente = await prisma.actividades.findUnique({
             where: { id: req.params.id }

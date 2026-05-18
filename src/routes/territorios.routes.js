@@ -118,15 +118,15 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
     const { actividad_id, tiempo_segs, modalidad, grupo_id } = req.body
 
     if (!tiempo_segs) {
-        return res.status(400).json({ mensaje: 'tiempo_segs es requerido' })
+        return res.status(400).json({ mensaje: 'tiempo_segs es requerido', codigo_error: 'datos_incompletos' })
     }
 
     if (!modalidad || !['individual', 'grupal'].includes(modalidad)) {
-        return res.status(400).json({ mensaje: 'modalidad debe ser individual o grupal' })
+        return res.status(400).json({ mensaje: 'modalidad debe ser individual o grupal', codigo_error: 'datos_incompletos' })
     }
 
     if (modalidad === 'grupal' && !grupo_id) {
-        return res.status(400).json({ mensaje: 'grupo_id es requerido para modalidad grupal' })
+        return res.status(400).json({ mensaje: 'grupo_id es requerido para modalidad grupal', codigo_error: 'datos_incompletos' })
     }
 
     try {
@@ -150,13 +150,13 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
             if (uuidRegex.test(actividad_id)) {
                 actividad = await prisma.actividades.findUnique({ where: { id: actividad_id } })
                 if (!actividad) {
-                    return res.status(404).json({ mensaje: 'Actividad no encontrada' })
+                    return res.status(404).json({ mensaje: 'Actividad no encontrada. Puede que se haya eliminado.', codigo_error: 'actividad_no_encontrada' })
                 }
                 if (actividad.usuario_id !== req.usuario.id) {
-                    return res.status(403).json({ mensaje: 'Esta actividad no te pertenece' })
+                    return res.status(403).json({ mensaje: 'Esta actividad no te pertenece.', codigo_error: 'sin_permiso' })
                 }
                 if (!actividad.hora_fin) {
-                    return res.status(400).json({ mensaje: 'La actividad debe estar finalizada' })
+                    return res.status(400).json({ mensaje: 'La actividad debe estar finalizada antes de intentar conquistar.', codigo_error: 'actividad_no_finalizada' })
                 }
             }
         }
@@ -174,7 +174,8 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
 
         if (!esModalidadCorrecta) {
             return res.status(400).json({
-                mensaje: `Este territorio es de modalidad ${territorio.modalidad}`
+                mensaje: `Este territorio es de modalidad ${territorio.modalidad}. No puedes intentarlo en modo ${modalidad}.`,
+                codigo_error: 'modalidad_incorrecta'
             })
         }
 
@@ -187,7 +188,7 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
         // ═════════════════════════════════════════════════════════════════════
         if (modalidad === 'grupal') {
             if (territorio.grupo_propietario_id === grupo_id) {
-                return res.status(400).json({ mensaje: 'Tu grupo ya es dueño de este territorio' })
+                return res.status(400).json({ mensaje: 'Tu grupo ya es dueño de este territorio.', codigo_error: 'ya_es_dueno' })
             }
 
             const esMiembro = await prisma.miembros_grupo.findUnique({
@@ -195,7 +196,7 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
             })
 
             if (!esMiembro) {
-                return res.status(403).json({ mensaje: 'No perteneces a ese grupo' })
+                return res.status(403).json({ mensaje: 'No perteneces a ese grupo.', codigo_error: 'sin_permiso' })
             }
 
             // Buscar si ya hay una disputa activa
@@ -273,19 +274,43 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
         // LÓGICA INDIVIDUAL
         // ═════════════════════════════════════════════════════════════════════
         if (territorio.propietario_id === req.usuario.id) {
-            return res.status(400).json({ mensaje: 'Ya eres el dueño de este territorio' })
+            return res.status(400).json({ mensaje: 'Ya eres el dueño de este territorio.', codigo_error: 'ya_es_dueno' })
+        }
+
+        // ── Diagnóstico detallado ─────────────────────────────────────────
+        console.log('[CONQUISTAR] actividad encontrada:', actividad ? actividad.id : 'null')
+        console.log('[CONQUISTAR] actividad.ruta tipo:', actividad ? typeof actividad.ruta : 'n/a')
+        console.log('[CONQUISTAR] actividad.ruta valor (primeros 100 chars):', actividad?.ruta ? String(actividad.ruta).substring(0, 100) : 'null/undefined')
+        console.log('[CONQUISTAR] territorio.poligono tipo:', typeof territorio.poligono)
+
+        // ── Guardia: si no hay actividad válida en absoluto ───────────────
+        if (!actividad) {
+            return res.status(422).json({
+                mensaje: 'No se encontró ninguna actividad completada para validar. Asegúrate de finalizar el trayecto antes de conquistar.',
+                resultado: 'ruta_invalida',
+                codigo_error: 'sin_ruta'
+            })
         }
 
         // ── Validación geoespacial del perímetro ──────────────────────────
         if (actividad.ruta) {
-            const resultadoGeo = validarRutaPerimetral(territorio.poligono, actividad.ruta)
+            const rutaStr = String(actividad.ruta) // Normalizar a string por si Prisma devuelve otro tipo
+            const resultadoGeo = validarRutaPerimetral(territorio.poligono, rutaStr)
             if (!resultadoGeo.valido) {
                 return res.status(422).json({
                     mensaje: resultadoGeo.mensaje,
                     cobertura_pct: resultadoGeo.cobertura,
-                    resultado: 'ruta_invalida'
+                    resultado: 'ruta_invalida',
+                    codigo_error: 'ruta_incompleta'
                 })
             }
+        } else {
+            // Si no hay ruta registrada, significa que el GPS no funcionó o no se movó nada
+            return res.status(422).json({
+                mensaje: 'No se registró ninguna ruta GPS para esta actividad. Asegúrate de tener el GPS activo y de moverte durante el trayecto.',
+                resultado: 'ruta_invalida',
+                codigo_error: 'sin_ruta'
+            })
         }
 
         const esTeritorioLibre = !territorio.propietario_id
@@ -397,7 +422,12 @@ router.post('/:id/conquistar', verificarToken, async (req, res) => {
         })
 
     } catch (error) {
-        res.status(500).json({ mensaje: 'Error al conquistar territorio', error: error.message })
+        console.error('[CONQUISTAR] Error interno:', error)
+        res.status(500).json({
+            mensaje: 'Error interno del servidor al procesar la conquista. Inténtalo de nuevo.',
+            codigo_error: 'error_servidor',
+            detalle: error.message
+        })
     }
 })
 
