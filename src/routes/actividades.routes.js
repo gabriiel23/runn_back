@@ -249,6 +249,10 @@ router.get('/mis-actividades/estadisticas', verificarToken, async (req, res) => 
             }
         })
 
+        const territoriosConquistados = await prisma.territorios.count({
+            where: { propietario_id: req.usuario.id }
+        })
+
         if (actividades.length === 0) {
             return res.json({
                 total_carreras: 0,
@@ -258,7 +262,8 @@ router.get('/mis-actividades/estadisticas', verificarToken, async (req, res) => 
                 ritmo_promedio_general: 0,
                 calorias_totales: 0,
                 mejor_carrera: null,
-                por_tipo: { correr: 0, senderismo: 0 }
+                por_tipo: { correr: 0, senderismo: 0 },
+                territorios_conquistados: territoriosConquistados
             })
         }
 
@@ -300,7 +305,8 @@ router.get('/mis-actividades/estadisticas', verificarToken, async (req, res) => 
                 fecha: mejorCarrera.hora_inicio,
                 duracion_formateada: formatearDuracion(mejorCarrera.duracion_segs)
             } : null,
-            por_tipo: porTipo
+            por_tipo: porTipo,
+            territorios_conquistados: territoriosConquistados
         })
 
     } catch (error) {
@@ -380,6 +386,157 @@ router.get('/mis-actividades/resumen-home', verificarToken, async (req, res) => 
 
     } catch (error) {
         res.status(500).json({ mensaje: 'Error al obtener resumen home', error: error.message })
+    }
+})
+
+// ─── MIS INSIGNIAS ─────────────────────────────────────────
+router.get('/mis-actividades/insignias', verificarToken, async (req, res) => {
+    try {
+        // Insignias generales desbloqueadas
+        const insigniasDesbloqueadas = await prisma.insignias_usuario.findMany({
+            where: { usuario_id: req.usuario.id },
+            include: {
+                insignias: true
+            },
+            orderBy: { ganado_en: 'desc' }
+        })
+
+        // Todas las insignias generales (para saber las bloqueadas)
+        const todasInsignias = await prisma.insignias.findMany({
+            orderBy: { creado_en: 'asc' }
+        })
+
+        // Insignias de distancia desbloqueadas
+        const distDesbloqueadas = await prisma.usuario_insignias_distancia.findMany({
+            where: { usuario_id: req.usuario.id },
+            include: {
+                insignias_distancia: true
+            },
+            orderBy: { ganado_en: 'desc' }
+        })
+
+        // Todas las insignias de distancia
+        const todasDistancia = await prisma.insignias_distancia.findMany({
+            orderBy: { km_requeridos: 'asc' }
+        })
+
+        // Distancia total del usuario para calcular progreso
+        const stats = await prisma.actividades.aggregate({
+            where: { usuario_id: req.usuario.id, hora_fin: { not: null } },
+            _sum: { distancia_km: true }
+        })
+        const distanciaTotal = parseFloat(stats._sum.distancia_km || 0)
+
+        // Set de insignia_id desbloqueadas
+        const desbIds = new Set(insigniasDesbloqueadas.map(i => i.insignia_id))
+        const distIds = new Set(distDesbloqueadas.map(i => i.insignia_id))
+
+        // Construir array completo: desbloqueadas + bloqueadas
+        const insignias = todasInsignias.map(ins => {
+            const des = insigniasDesbloqueadas.find(d => d.insignia_id === ins.id)
+            return {
+                id: ins.id,
+                nombre: ins.nombre,
+                descripcion: ins.descripcion,
+                icono_url: ins.icono_url,
+                condicion: ins.condicion,
+                desbloqueada: desbIds.has(ins.id),
+                ganado_en: des?.ganado_en ?? null,
+                progreso: null
+            }
+        })
+
+        const insigniasDistancia = todasDistancia.map(ins => {
+            const des = distDesbloqueadas.find(d => d.insignia_id === ins.id)
+            const kmReq = parseFloat(ins.km_requeridos)
+            const progreso = Math.min(distanciaTotal / kmReq, 1)
+            return {
+                id: ins.id,
+                nombre: ins.nombre,
+                descripcion: ins.descripcion,
+                icono_url: ins.icono_url,
+                km_requeridos: kmReq,
+                nivel: ins.nivel,
+                desbloqueada: distIds.has(ins.id),
+                ganado_en: des?.ganado_en ?? null,
+                progreso: distIds.has(ins.id) ? 1 : progreso
+            }
+        })
+
+        res.json({
+            insignias,
+            insignias_distancia: insigniasDistancia,
+            distancia_total_km: distanciaTotal
+        })
+
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener insignias', error: error.message })
+    }
+})
+
+// ─── GRÁFICOS ESTADÍSTICAS ─────────────────────────────────
+router.get('/mis-actividades/graficos', verificarToken, async (req, res) => {
+    try {
+        const actividades = await prisma.actividades.findMany({
+            where: {
+                usuario_id: req.usuario.id,
+                hora_fin: { not: null }
+            }
+        })
+
+        const ahora = new Date()
+        const diaSemana = ahora.getDay() // 0 dom, 1 lun
+        const diffLunes = diaSemana === 0 ? -6 : 1 - diaSemana
+        const lunesSemanaActual = new Date(ahora)
+        lunesSemanaActual.setDate(ahora.getDate() + diffLunes)
+        lunesSemanaActual.setHours(0, 0, 0, 0)
+
+        const labels = ['L', 'M', 'X', 'J', 'V', 'S', 'D']
+        const kmPoints = [0, 0, 0, 0, 0, 0, 0]
+        const speedPoints = [0, 0, 0, 0, 0, 0, 0]
+        const pacePoints = [0, 0, 0, 0, 0, 0, 0]
+        const counts = [0, 0, 0, 0, 0, 0, 0]
+
+        let totalDist = 0
+
+        actividades.forEach(a => {
+            const dist = parseFloat(a.distancia_km) || 0
+            totalDist += dist
+
+            if (a.hora_inicio >= lunesSemanaActual) {
+                let d = a.hora_inicio.getDay()
+                let idx = d === 0 ? 6 : d - 1
+                
+                kmPoints[idx] += dist
+                speedPoints[idx] += parseFloat(a.velocidad_promedio) || 0
+                pacePoints[idx] += parseFloat(a.ritmo_promedio) || 0
+                counts[idx] += 1
+            }
+        })
+
+        // Promedios
+        for (let i = 0; i < 7; i++) {
+            if (counts[i] > 0) {
+                speedPoints[i] = speedPoints[i] / counts[i]
+                pacePoints[i] = pacePoints[i] / counts[i]
+            }
+            kmPoints[i] = Math.round(kmPoints[i] * 100) / 100
+            speedPoints[i] = Math.round(speedPoints[i] * 10) / 10
+            pacePoints[i] = Math.round(pacePoints[i] * 10) / 10
+        }
+
+        const avgDist = actividades.length > 0 ? (totalDist / actividades.length) : 0
+
+        res.json({
+            total_distance: `${Math.round(totalDist * 10) / 10} km`,
+            average_distance: `${Math.round(avgDist * 10) / 10} km`,
+            distance_goal: '20.0 km', // Se podría sacar de req.usuario.objetivo si existiera
+            km_points: labels.map((l, i) => ({ label: l, value: kmPoints[i] })),
+            speed_points: labels.map((l, i) => ({ label: l, value: speedPoints[i] })),
+            pace_points: labels.map((l, i) => ({ label: l, value: pacePoints[i] }))
+        })
+    } catch (error) {
+        res.status(500).json({ mensaje: 'Error al obtener gráficos', error: error.message })
     }
 })
 
