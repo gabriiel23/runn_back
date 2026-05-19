@@ -5,7 +5,7 @@ const { nanoid } = require('nanoid')
 const prisma = require('../prisma')
 const supabase = require('../supabase')
 const verificarToken = require('../middlewares/auth.middleware')
-const verificarAdmin = require('../middlewares/admin.middleware')
+const { verificarAdminEventos } = require('../middlewares/admin.middleware')
 
 const router = express.Router()
 
@@ -41,7 +41,7 @@ const notificar = async (usuarioId, tipo, mensaje) => {
 }
 
 // ─── CREAR EVENTO (solo admin) ────────────────────────────
-router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (req, res) => {
+router.post('/', verificarToken, verificarAdminEventos, upload.single('foto'), async (req, res) => {
   const {
     titulo, descripcion, fecha, hora, lugar, distancia_km,
     es_pago, precio, limite_participantes, limite_lista_espera,
@@ -457,7 +457,7 @@ router.post('/:id/unirse-pago', verificarToken, upload.single('comprobante'), as
 
 
 // ─── ADMITIR O RECHAZAR DE LISTA DE ESPERA (admin) ────────
-router.put('/:id/lista-espera/:usuario_id', verificarToken, verificarAdmin, async (req, res) => {
+router.put('/:id/lista-espera/:usuario_id', verificarToken, verificarAdminEventos, async (req, res) => {
   const { accion, motivo } = req.body
 
   if (!['admitir', 'rechazar'].includes(accion)) {
@@ -576,7 +576,7 @@ router.put('/:id/lista-espera/:usuario_id', verificarToken, verificarAdmin, asyn
 })
 
 // ─── VER LISTA DE ESPERA (admin) ──────────────────────────
-router.get('/:id/lista-espera', verificarToken, verificarAdmin, async (req, res) => {
+router.get('/:id/lista-espera', verificarToken, verificarAdminEventos, async (req, res) => {
   try {
     const lista = await prisma.eventos_lista_espera.findMany({
       where: { evento_id: req.params.id },
@@ -606,7 +606,7 @@ router.get('/:id/lista-espera', verificarToken, verificarAdmin, async (req, res)
 })
 
 // ─── VERIFICAR CÓDIGO EN EL EVENTO (admin) ────────────────
-router.post('/:id/verificar-codigo', verificarToken, verificarAdmin, async (req, res) => {
+router.post('/:id/verificar-codigo', verificarToken, verificarAdminEventos, async (req, res) => {
   const { codigo } = req.body
 
   if (!codigo) {
@@ -664,7 +664,7 @@ router.post('/:id/verificar-codigo', verificarToken, verificarAdmin, async (req,
 })
 
 // ─── VER LISTA DE ESCANEADOS (admin) ──────────────────────
-router.get('/:id/escaneados', verificarToken, verificarAdmin, async (req, res) => {
+router.get('/:id/escaneados', verificarToken, verificarAdminEventos, async (req, res) => {
   try {
     const escaneados = await prisma.eventos_codigos.findMany({
       where: { evento_id: req.params.id, usado: true },
@@ -690,7 +690,7 @@ router.get('/:id/escaneados', verificarToken, verificarAdmin, async (req, res) =
 })
 
 // ─── FINALIZAR EVENTO (admin) ──────────────────────────────
-router.put('/:id/finalizar', verificarToken, verificarAdmin, async (req, res) => {
+router.put('/:id/finalizar', verificarToken, verificarAdminEventos, async (req, res) => {
   try {
     const eventoInfo = await prisma.eventos.findUnique({
       where: { id: req.params.id },
@@ -749,7 +749,7 @@ router.delete('/:id/unirse', verificarToken, async (req, res) => {
 })
 
 // ─── EDITAR EVENTO (solo admin) ───────────────────────────
-router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async (req, res) => {
+router.put('/:id', verificarToken, verificarAdminEventos, upload.single('foto'), async (req, res) => {
   const {
     titulo, descripcion, fecha, hora, lugar, distancia_km,
     es_pago, precio, limite_participantes, limite_lista_espera,
@@ -806,7 +806,7 @@ router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async 
 })
 
 // ─── AGREGAR PARTICIPANTE (solo admin) ────────────────────
-router.post('/:id/participantes', verificarToken, verificarAdmin, async (req, res) => {
+router.post('/:id/participantes', verificarToken, verificarAdminEventos, async (req, res) => {
   const { usuario_id } = req.body
 
   if (!usuario_id) {
@@ -870,7 +870,7 @@ router.post('/:id/participantes', verificarToken, verificarAdmin, async (req, re
 })
 
 // ─── ELIMINAR PARTICIPANTE (solo admin) ───────────────────
-router.delete('/:id/participantes/:usuario_id', verificarToken, verificarAdmin, async (req, res) => {
+router.delete('/:id/participantes/:usuario_id', verificarToken, verificarAdminEventos, async (req, res) => {
   try {
     const evento = await prisma.eventos.findUnique({
       where: { id: req.params.id },
@@ -903,7 +903,7 @@ router.delete('/:id/participantes/:usuario_id', verificarToken, verificarAdmin, 
 })
 
 // ─── ELIMINAR EVENTO (solo admin) ─────────────────────────
-router.delete('/:id', verificarToken, verificarAdmin, async (req, res) => {
+router.delete('/:id', verificarToken, verificarAdminEventos, async (req, res) => {
   try {
     await prisma.eventos.delete({ where: { id: req.params.id } })
     res.json({ mensaje: 'Evento eliminado exitosamente ✅' })

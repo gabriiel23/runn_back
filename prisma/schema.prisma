@@ -410,7 +410,7 @@ model usuarios {
   territorio_aportes_grupales                     territorio_aportes_grupales[]
 
   // ROLES
-  rol              String?   @default("usuario") @db.VarChar(20)
+  rol              String?   @default("usuario") @db.VarChar(100)
 }
 
 model wearables {

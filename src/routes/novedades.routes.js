@@ -3,7 +3,7 @@ const multer = require('multer')
 const prisma = require('../prisma')
 const supabase = require('../supabase')
 const verificarToken = require('../middlewares/auth.middleware')
-const verificarAdmin = require('../middlewares/admin.middleware')
+const { verificarAdminNoticias } = require('../middlewares/admin.middleware')
 
 const router = express.Router()
 
@@ -37,7 +37,7 @@ router.get('/', verificarToken, async (req, res) => {
 })
 
 // ─── LISTAR TODAS (admin) incluye inactivas ───────────────
-router.get('/admin', verificarToken, verificarAdmin, async (req, res) => {
+router.get('/admin', verificarToken, verificarAdminNoticias, async (req, res) => {
   try {
     const novedades = await prisma.novedades.findMany({
       orderBy: [
@@ -72,7 +72,7 @@ router.get('/:id', verificarToken, async (req, res) => {
 })
 
 // ─── CREAR NOVEDAD (solo admin) ───────────────────────────
-router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (req, res) => {
+router.post('/', verificarToken, verificarAdminNoticias, upload.single('foto'), async (req, res) => {
   const { titulo, descripcion, tipo, url_externa, activa, destacada, publicado_en } = req.body
 
   if (!titulo) {
@@ -126,7 +126,7 @@ router.post('/', verificarToken, verificarAdmin, upload.single('foto'), async (r
 })
 
 // ─── EDITAR NOVEDAD (solo admin) ──────────────────────────
-router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async (req, res) => {
+router.put('/:id', verificarToken, verificarAdminNoticias, upload.single('foto'), async (req, res) => {
   const { titulo, descripcion, tipo, url_externa, activa, destacada, publicado_en } = req.body
 
   try {
@@ -177,7 +177,7 @@ router.put('/:id', verificarToken, verificarAdmin, upload.single('foto'), async 
 })
 
 // ─── ACTIVAR / DESACTIVAR (solo admin) ────────────────────
-router.patch('/:id/estado', verificarToken, verificarAdmin, async (req, res) => {
+router.patch('/:id/estado', verificarToken, verificarAdminNoticias, async (req, res) => {
   const { activa } = req.body
 
   if (activa === undefined) {
@@ -201,7 +201,7 @@ router.patch('/:id/estado', verificarToken, verificarAdmin, async (req, res) => 
 })
 
 // ─── DESTACAR / QUITAR DESTACADO (solo admin) ─────────────
-router.patch('/:id/destacar', verificarToken, verificarAdmin, async (req, res) => {
+router.patch('/:id/destacar', verificarToken, verificarAdminNoticias, async (req, res) => {
   const { destacada } = req.body
 
   if (destacada === undefined) {
@@ -225,7 +225,7 @@ router.patch('/:id/destacar', verificarToken, verificarAdmin, async (req, res) =
 })
 
 // ─── ELIMINAR NOVEDAD (solo admin) ────────────────────────
-router.delete('/:id', verificarToken, verificarAdmin, async (req, res) => {
+router.delete('/:id', verificarToken, verificarAdminNoticias, async (req, res) => {
   try {
     await prisma.novedades.delete({
       where: { id: req.params.id }

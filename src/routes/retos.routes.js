@@ -1,7 +1,7 @@
 const express = require('express')
 const prisma = require('../prisma')
 const verificarToken = require('../middlewares/auth.middleware')
-const verificarAdmin = require('../middlewares/admin.middleware')
+const { verificarSuperAdmin: verificarAdmin } = require('../middlewares/admin.middleware')
 const { crearRetoDiarioIA, crearRetoSemanalIA } = require('../services/retos.service')
 
 const router = express.Router()

@@ -1,7 +1,7 @@
 const express = require('express')
 const prisma = require('../prisma')
 const verificarToken = require('../middlewares/auth.middleware')
-const verificarAdmin = require('../middlewares/admin.middleware')
+const { verificarSuperAdmin: verificarAdmin } = require('../middlewares/admin.middleware')
 const { validarRutaPerimetral, verificarProximidad } = require('../services/territorio_validacion.service')
 
 const router = express.Router()

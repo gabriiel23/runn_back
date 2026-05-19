@@ -1,7 +1,7 @@
 const express = require('express')
 const prisma = require('../prisma')
 const verificarToken = require('../middlewares/auth.middleware')
-const verificarAdmin = require('../middlewares/admin.middleware')
+const { verificarAdminNoticias } = require('../middlewares/admin.middleware')
 const { generarFraseMotivacional } = require('../services/ia.service')
 
 const router = express.Router()
@@ -53,7 +53,7 @@ router.get('/', verificarToken, async (req, res) => {
 })
 
 // ─── LISTAR TODAS (admin: activas + inactivas) ────────────────────────────
-router.get('/admin/todas', verificarToken, verificarAdmin, async (req, res) => {
+router.get('/admin/todas', verificarToken, verificarAdminNoticias, async (req, res) => {
     try {
         const frases = await prisma.frases_motivacionales.findMany({
             orderBy: { creado_en: 'desc' }
@@ -65,7 +65,7 @@ router.get('/admin/todas', verificarToken, verificarAdmin, async (req, res) => {
 })
 
 // ─── GENERAR FRASE CON IA (admin) ─────────────────────────────────────────
-router.post('/generar', verificarToken, verificarAdmin, async (req, res) => {
+router.post('/generar', verificarToken, verificarAdminNoticias, async (req, res) => {
     try {
         const datos = await generarFraseMotivacional()
         const frase = await prisma.frases_motivacionales.create({
@@ -83,7 +83,7 @@ router.post('/generar', verificarToken, verificarAdmin, async (req, res) => {
 })
 
 // ─── CREAR FRASE MANUAL (admin) ───────────────────────────────────────────
-router.post('/manual', verificarToken, verificarAdmin, async (req, res) => {
+router.post('/manual', verificarToken, verificarAdminNoticias, async (req, res) => {
     const { frase, autor, vigente_desde, vigente_hasta } = req.body
 
     if (!frase || !autor) {
@@ -108,7 +108,7 @@ router.post('/manual', verificarToken, verificarAdmin, async (req, res) => {
 })
 
 // ─── EDITAR FRASE (admin) ─────────────────────────────────────────────────
-router.put('/:id', verificarToken, verificarAdmin, async (req, res) => {
+router.put('/:id', verificarToken, verificarAdminNoticias, async (req, res) => {
     const { frase, autor, activa, vigente_desde, vigente_hasta } = req.body
 
     try {
@@ -129,7 +129,7 @@ router.put('/:id', verificarToken, verificarAdmin, async (req, res) => {
 })
 
 // ─── ELIMINAR FRASE (admin) ───────────────────────────────────────────────
-router.delete('/:id', verificarToken, verificarAdmin, async (req, res) => {
+router.delete('/:id', verificarToken, verificarAdminNoticias, async (req, res) => {
     try {
         await prisma.frases_motivacionales.delete({ where: { id: req.params.id } })
         res.json({ mensaje: 'Frase eliminada ✅' })
@@ -139,7 +139,7 @@ router.delete('/:id', verificarToken, verificarAdmin, async (req, res) => {
 })
 
 // ─── REGENERAR FRASE ESPECÍFICA CON IA (admin) ────────────────────────────
-router.post('/:id/regenerar', verificarToken, verificarAdmin, async (req, res) => {
+router.post('/:id/regenerar', verificarToken, verificarAdminNoticias, async (req, res) => {
     try {
         const datos = await generarFraseMotivacional()
         const actualizada = await prisma.frases_motivacionales.update({

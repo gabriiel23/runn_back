@@ -4,7 +4,7 @@ const leoProfanity = require('leo-profanity')
 const prisma = require('../prisma')
 const supabase = require('../supabase')
 const verificarToken = require('../middlewares/auth.middleware')
-const verificarAdmin = require('../middlewares/admin.middleware')
+const { tieneRol } = require('../middlewares/admin.middleware')
 
 const router = express.Router()
 
@@ -387,7 +387,7 @@ router.delete('/:id', verificarToken, async (req, res) => {
         }
 
         const esCreador = grupo.creado_por === req.usuario.id
-        const esAdminGeneral = req.usuario.rol === 'admin'
+        const esAdminGeneral = tieneRol(req.usuario.rol, 'superadmin')
 
         if (!esCreador && !esAdminGeneral) {
             return res.status(403).json({ mensaje: 'No tienes permiso para eliminar este grupo' })
